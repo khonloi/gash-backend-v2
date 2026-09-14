@@ -10,6 +10,8 @@ import { globalErrorHandler } from './middlewares/errorHandler.js';
 import { AppError } from './utils/AppError.js';
 import { healthCheck } from './controllers/healthController.js';
 import productRouter from './routes/productRoutes.js';
+import authRouter from './routes/authRoutes.js';
+import userRouter from './routes/userRoutes.js';
 
 const app: Application = express();
 
@@ -23,11 +25,23 @@ if (process.env.NODE_ENV === 'development') {
 
 // Limit requests from same API
 const limiter = rateLimit({
-  max: 100, // 100 requests
+  max: 1000,
   windowMs: 60 * 60 * 1000, // 1 hour
   message: 'Too many requests from this IP, please try again in an hour!',
+  skip: () => process.env.NODE_ENV === 'test',
 });
 app.use('/api', limiter);
+
+// Stricter rate limiting for auth endpoints (brute-force protection)
+const authLimiter = rateLimit({
+  max: 20,
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  message:
+    'Too many login or registration attempts from this IP, please try again in 15 minutes!',
+  skip: () => process.env.NODE_ENV === 'test',
+});
+app.use('/api/v1/auth/login', authLimiter);
+app.use('/api/v1/auth/register', authLimiter);
 
 // Body parser, reading data from body into req.body
 app.use(express.json({ limit: '10kb' }));
@@ -49,6 +63,7 @@ app.use(
       'status',
       'isFeatured',
       'tags',
+      'role',
     ],
   })
 );
@@ -60,6 +75,8 @@ app.use(compression());
 app.use(cors());
 
 // Routes setup
+app.use('/api/v1/auth', authRouter);
+app.use('/api/v1/users', userRouter);
 app.use('/api/v1/products', productRouter);
 
 // Health check endpoint

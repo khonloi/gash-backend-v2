@@ -3,8 +3,11 @@ import mongoose from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import app from '../src/app.js';
 import { Product } from '../src/models/Product.js';
+import { User } from '../src/models/User.js';
+import { signAccessToken } from '../src/utils/jwt.js';
 
 let mongoServer: MongoMemoryServer;
+let adminToken: string;
 
 beforeAll(async () => {
   mongoServer = await MongoMemoryServer.create();
@@ -19,6 +22,16 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await Product.deleteMany({});
+  await User.deleteMany({});
+
+  const admin = await User.create({
+    firstName: 'Admin',
+    lastName: 'User',
+    email: 'admin@example.com',
+    password: 'Password123!',
+    role: 'admin',
+  });
+  adminToken = signAccessToken(admin._id.toString(), 'admin');
 });
 
 const sampleProductData = {
@@ -39,9 +52,41 @@ const sampleProductData = {
 
 describe('Product API Integration Tests', () => {
   describe('POST /api/v1/products', () => {
+    it('should fail with 401 when user is not authenticated', async () => {
+      const res = await request(app)
+        .post('/api/v1/products')
+        .send(sampleProductData);
+
+      expect(res.statusCode).toBe(401);
+      expect(res.body.status).toBe('fail');
+    });
+
+    it('should fail with 403 when user is not admin or seller', async () => {
+      const customer = await User.create({
+        firstName: 'Customer',
+        lastName: 'User',
+        email: 'customer@example.com',
+        password: 'Password123!',
+        role: 'customer',
+      });
+      const customerToken = signAccessToken(
+        customer._id.toString(),
+        'customer'
+      );
+
+      const res = await request(app)
+        .post('/api/v1/products')
+        .set('Authorization', `Bearer ${customerToken}`)
+        .send(sampleProductData);
+
+      expect(res.statusCode).toBe(403);
+      expect(res.body.status).toBe('fail');
+    });
+
     it('should create a product and generate a slug automatically', async () => {
       const res = await request(app)
         .post('/api/v1/products')
+        .set('Authorization', `Bearer ${adminToken}`)
         .send(sampleProductData);
 
       expect(res.statusCode).toBe(201);
@@ -57,9 +102,12 @@ describe('Product API Integration Tests', () => {
     });
 
     it('should fail with 400 when required fields are missing', async () => {
-      const res = await request(app).post('/api/v1/products').send({
-        name: 'Incomplete Product',
-      });
+      const res = await request(app)
+        .post('/api/v1/products')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({
+          name: 'Incomplete Product',
+        });
 
       expect(res.statusCode).toBe(400);
       expect(res.body.status).toBe('fail');
@@ -67,10 +115,14 @@ describe('Product API Integration Tests', () => {
     });
 
     it('should fail with 400 when creating a product with duplicate SKU', async () => {
-      await request(app).post('/api/v1/products').send(sampleProductData);
+      await request(app)
+        .post('/api/v1/products')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send(sampleProductData);
 
       const res = await request(app)
         .post('/api/v1/products')
+        .set('Authorization', `Bearer ${adminToken}`)
         .send({
           ...sampleProductData,
           name: 'Another Headphone',
@@ -218,6 +270,7 @@ describe('Product API Integration Tests', () => {
 
       const res = await request(app)
         .patch(`/api/v1/products/${created._id}`)
+        .set('Authorization', `Bearer ${adminToken}`)
         .send({ name: 'Premium Bluetooth Headphones', price: 219.99 });
 
       expect(res.statusCode).toBe(200);
@@ -236,6 +289,7 @@ describe('Product API Integration Tests', () => {
 
       const res = await request(app)
         .patch(`/api/v1/products/${created._id}/stock`)
+        .set('Authorization', `Bearer ${adminToken}`)
         .send({ quantity: 15, operation: 'increment' });
 
       expect(res.statusCode).toBe(200);
@@ -250,6 +304,7 @@ describe('Product API Integration Tests', () => {
 
       const res = await request(app)
         .patch(`/api/v1/products/${created._id}/stock`)
+        .set('Authorization', `Bearer ${adminToken}`)
         .send({ quantity: 4, operation: 'decrement' });
 
       expect(res.statusCode).toBe(200);
@@ -264,6 +319,7 @@ describe('Product API Integration Tests', () => {
 
       const res = await request(app)
         .patch(`/api/v1/products/${created._id}/stock`)
+        .set('Authorization', `Bearer ${adminToken}`)
         .send({ quantity: 10, operation: 'decrement' });
 
       expect(res.statusCode).toBe(400);
@@ -276,7 +332,9 @@ describe('Product API Integration Tests', () => {
     it('should delete product and return 204', async () => {
       const created = await Product.create(sampleProductData);
 
-      const res = await request(app).delete(`/api/v1/products/${created._id}`);
+      const res = await request(app)
+        .delete(`/api/v1/products/${created._id}`)
+        .set('Authorization', `Bearer ${adminToken}`);
 
       expect(res.statusCode).toBe(204);
 

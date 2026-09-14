@@ -11,6 +11,7 @@ import {
   getFeaturedProducts,
 } from '../controllers/productController.js';
 import { validate } from '../middlewares/validate.js';
+import { protect, restrictTo } from '../middlewares/auth.js';
 import {
   createProductSchema,
   updateProductSchema,
@@ -29,22 +30,33 @@ router.get('/slug/:slug', getProductBySlug);
 router
   .route('/')
   .get(validate(productQuerySchema, 'query'), getAllProducts)
-  // TODO: Add auth middleware (protect, restrictTo('admin', 'seller'))
-  .post(validate(createProductSchema, 'body'), createProduct);
+  .post(
+    protect,
+    restrictTo('admin', 'seller'),
+    validate(createProductSchema, 'body'),
+    createProduct
+  );
 
 // Single item routes
 router
   .route('/:id')
   .get(getProduct)
-  // TODO: Add auth middleware (protect, restrictTo('admin', 'seller'))
-  .patch(validate(updateProductSchema, 'body'), updateProduct)
-  // TODO: Add auth middleware (protect, restrictTo('admin'))
-  .delete(deleteProduct);
+  .patch(
+    protect,
+    restrictTo('admin', 'seller'),
+    validate(updateProductSchema, 'body'),
+    updateProduct
+  )
+  .delete(protect, restrictTo('admin'), deleteProduct);
 
 // Dedicated stock adjustment
 router
   .route('/:id/stock')
-  // TODO: Add auth middleware (protect, restrictTo('admin', 'seller'))
-  .patch(validate(updateStockSchema, 'body'), updateStock);
+  .patch(
+    protect,
+    restrictTo('admin', 'seller'),
+    validate(updateStockSchema, 'body'),
+    updateStock
+  );
 
 export default router;
