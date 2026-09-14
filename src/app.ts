@@ -9,6 +9,7 @@ import hpp from 'hpp';
 import { globalErrorHandler } from './middlewares/errorHandler.js';
 import { AppError } from './utils/AppError.js';
 import { healthCheck } from './controllers/healthController.js';
+import productRouter from './routes/productRoutes.js';
 
 const app: Application = express();
 
@@ -36,7 +37,21 @@ app.use(express.urlencoded({ extended: true, limit: '10kb' }));
 app.use(sanitizeData);
 
 // Protect against HTTP Parameter Pollution attacks
-app.use(hpp());
+app.use(
+  hpp({
+    whitelist: [
+      'price',
+      'ratingsAverage',
+      'ratingsQuantity',
+      'category',
+      'subcategory',
+      'brand',
+      'status',
+      'isFeatured',
+      'tags',
+    ],
+  })
+);
 
 // Compress responses
 app.use(compression());
@@ -44,8 +59,8 @@ app.use(compression());
 // Implement CORS
 app.use(cors());
 
-// Routes setup will go here
-// app.use('/api/v1/users', userRouter);
+// Routes setup
+app.use('/api/v1/products', productRouter);
 
 // Health check endpoint
 app.get('/api/v1/health', healthCheck);
