@@ -35,7 +35,8 @@ An enterprise-grade, production-ready, industry-standard RESTful API backend eng
   - [3. Address Management (`/api/v1/users/me/addresses`)](#3-address-management-apiv1usersmeaddresses)
   - [4. Admin User Management (`/api/v1/users`)](#4-admin-user-management-apiv1users)
   - [5. Product Catalog & Inventory (`/api/v1/products`)](#5-product-catalog--inventory-apiv1products)
-  - [6. System Health (`/api/v1/health`)](#6-system-health-apiv1health)
+  - [6. Shopping Cart Management (`/api/v1/cart`)](#6-shopping-cart-management-apiv1cart)
+  - [7. System Health (`/api/v1/health`)](#7-system-health-apiv1health)
 - [Error Handling & Observability](#error-handling--observability)
 - [Testing & Quality Assurance](#testing--quality-assurance)
 - [Production Deployment & Process Management](#production-deployment--process-management)
@@ -55,6 +56,10 @@ An enterprise-grade, production-ready, industry-standard RESTful API backend eng
   - Full product lifecycle with auto-slugification, SKU enforcement, category/tag taxonomies, and multi-tier pricing with discount support.
   - Dedicated atomic inventory adjustment (`/stock`) with out-of-stock and low-stock flagging.
   - Real-time aggregation pipeline (`/stats`) providing inventory valuation, category distributions, and rating metrics.
+- **Dedicated Shopping Cart Engine**:
+  - Persistent user cart in MongoDB with subdocument items and variant tracking (size, color, unit price).
+  - Atomic quantity adjustments, item removals, and full cart clearance.
+  - Seamless guest-to-user cart merge endpoint (`/cart/merge`) upon client authentication.
 - **Granular Role-Based Access Control (RBAC)**:
   - Declarative route guards for `customer`, `seller`, and `admin` roles.
   - Resource-level ownership checks preventing unauthorized seller tampering.
@@ -94,6 +99,7 @@ gash-backend-v2/
 │   │   └── logger.ts         # Winston structured logging pipeline
 │   ├── controllers/          # HTTP request handlers & presentation layer
 │   │   ├── authController.ts # Register, login, refresh, password recovery, email verification
+│   │   ├── cartController.ts # Cart retrieval, item management, clear, and merge
 │   │   ├── healthController.ts # System healthcheck endpoint
 │   │   ├── productController.ts# Product catalog, search, stock adjustments, aggregation
 │   │   └── userController.ts # User profile, addresses, admin account operations
@@ -103,18 +109,22 @@ gash-backend-v2/
 │   │   ├── mongoSanitize.ts  # Express 5-compatible NoSQL query injection prevention
 │   │   └── validate.ts       # Generic Zod middleware for params, query, and body
 │   ├── models/               # Mongoose schemas, hooks, methods, and virtuals
+│   │   ├── Cart.ts           # Cart schema with subdocument items and virtual price totals
 │   │   ├── Product.ts        # Product schema with pre-save slugify and virtual discounts
 │   │   └── User.ts           # User schema with bcrypt hooks, tokens, and address subdocs
 │   ├── routes/               # API route definitions & middleware wiring
 │   │   ├── authRoutes.ts     # /api/v1/auth routes
+│   │   ├── cartRoutes.ts     # /api/v1/cart routes
 │   │   ├── productRoutes.ts  # /api/v1/products routes
 │   │   └── userRoutes.ts     # /api/v1/users routes
 │   ├── services/             # Core business logic layer (controller-decoupled)
 │   │   ├── authService.ts    # Authentication workflows, token rotation, session eviction
+│   │   ├── cartService.ts    # Cart management, item adjustments, and merge workflows
 │   │   ├── productService.ts # Product CRUD, stock adjustment logic, aggregation queries
 │   │   └── userService.ts    # Profile management, address logic, admin operations
 │   ├── types/                # Ambient and explicit TypeScript interfaces / models
 │   │   ├── index.ts          # Central type exports
+│   │   ├── cart.ts           # ICart, ICartItem types
 │   │   ├── product.ts        # IProduct, ProductStatus, inventory types
 │   │   └── user.ts           # IUser, IAddress, IRefreshToken, UserRole
 │   ├── utils/                # Reusable utilities & helpers
@@ -125,6 +135,7 @@ gash-backend-v2/
 │   │   └── jwt.ts            # JWT signing, verification, and decoding helpers
 │   ├── validations/          # Zod validation schemas
 │   │   ├── authValidation.ts # Schemas for register, login, refresh, password reset
+│   │   ├── cartValidation.ts # Schemas for add item, update quantity, and merge
 │   │   ├── productValidation.ts # Schemas for product creation, updates, and stock
 │   │   └── userValidation.ts # Schemas for profile update, addresses, user queries
 │   ├── app.ts                # Express application configuration & middleware mount
@@ -266,6 +277,7 @@ The system implements the **OAuth 2.0 / IETF RFC 6749** recommended refresh toke
 | **Register, Login, Forgot Password**       |  Yes   |    Yes     |     Yes     |    Yes    |
 | **Manage Own Profile (`/me`)**             |   No   |    Yes     |     Yes     |    Yes    |
 | **Manage Own Addresses (`/me/addresses`)** |   No   |    Yes     |     Yes     |    Yes    |
+| **Shopping Cart Operations (`/cart`)**     |   No   |    Yes     |     Yes     |    Yes    |
 | **Create New Product**                     |   No   |     No     |     Yes     |    Yes    |
 | **Update Own Product / Adjust Stock**      |   No   |     No     | Yes (Owner) | Yes (All) |
 | **Delete Product**                         |   No   |     No     |     No      |    Yes    |
@@ -620,7 +632,87 @@ _(Supports operations: `"increment"`, `"decrement"`, or `"set"`)_.
 
 ---
 
-### 6. System Health (`/api/v1/health`)
+### 6. Shopping Cart Management (`/api/v1/cart`)
+
+_All cart endpoints require `Authorization: Bearer <accessToken>`._
+
+| Method   | Endpoint                     |   Access    | Description                                                 |
+| :------- | :--------------------------- | :---------: | :---------------------------------------------------------- |
+| `GET`    | `/api/v1/cart`               | User/Bearer | Retrieve authenticated user's cart                          |
+| `POST`   | `/api/v1/cart/items`         | User/Bearer | Add item or variant to cart                                 |
+| `PATCH`  | `/api/v1/cart/items/:itemId` | User/Bearer | Update item quantity                                        |
+| `DELETE` | `/api/v1/cart/items/:itemId` | User/Bearer | Remove specific item from cart                              |
+| `DELETE` | `/api/v1/cart`               | User/Bearer | Clear entire shopping cart                                  |
+| `POST`   | `/api/v1/cart/merge`         | User/Bearer | Merge client-side guest cart into server cart after sign-in |
+
+#### Add Item to Cart
+
+```http
+POST /api/v1/cart/items
+Authorization: Bearer <accessToken>
+Content-Type: application/json
+
+{
+  "productId": "66e57bb3e24b4c732c58a202",
+  "quantity": 2,
+  "size": "L",
+  "color": "Navy Blue"
+}
+```
+
+**Response (200 OK)**:
+
+```json
+{
+  "status": "success",
+  "data": {
+    "cart": {
+      "_id": "66e57bb3e24b4c732c58a303",
+      "user": "66e57bb3e24b4c732c58a101",
+      "items": [
+        {
+          "_id": "66e57bb3e24b4c732c58a404",
+          "product": {
+            "_id": "66e57bb3e24b4c732c58a202",
+            "name": "Performance Running Shoes",
+            "price": 129.99,
+            "images": [{ "url": "https://cdn.example.com/shoes.jpg" }]
+          },
+          "quantity": 2,
+          "size": "L",
+          "color": "Navy Blue",
+          "priceAtAdd": 129.99
+        }
+      ],
+      "totalPrice": 259.98,
+      "totalItems": 2
+    }
+  }
+}
+```
+
+#### Merge Guest Cart
+
+```http
+POST /api/v1/cart/merge
+Authorization: Bearer <accessToken>
+Content-Type: application/json
+
+{
+  "items": [
+    {
+      "productId": "66e57bb3e24b4c732c58a202",
+      "quantity": 1,
+      "size": "M",
+      "color": "Black"
+    }
+  ]
+}
+```
+
+---
+
+### 7. System Health (`/api/v1/health`)
 
 | Method | Endpoint         | Access | Description                                       |
 | :----- | :--------------- | :----: | :------------------------------------------------ |
