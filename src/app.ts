@@ -12,6 +12,7 @@ import { healthCheck } from './controllers/healthController.js';
 import productRouter from './routes/productRoutes.js';
 import authRouter from './routes/authRoutes.js';
 import userRouter from './routes/userRoutes.js';
+import cartRouter from './routes/cartRoutes.js';
 
 const app: Application = express();
 
@@ -101,6 +102,7 @@ app.use(
 app.use('/api/v1/auth', authRouter);
 app.use('/api/v1/users', userRouter);
 app.use('/api/v1/products', productRouter);
+app.use('/api/v1/cart', cartRouter);
 
 // Health check endpoint
 app.get('/api/v1/health', healthCheck);

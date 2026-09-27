@@ -1,4 +1,4 @@
-import { Document } from 'mongoose';
+import mongoose, { Document } from 'mongoose';
 
 export type ProductStatus = 'draft' | 'active' | 'archived';
 
@@ -67,3 +67,20 @@ export interface PaginatedResult<T> {
 export type QueryString = Record<string, any>;
 
 export * from './user.js';
+
+export interface ICartItem {
+  product: mongoose.Types.ObjectId | IProduct;
+  quantity: number;
+  size?: string;
+  color?: string;
+  priceAtAdd: number;
+}
+
+export interface ICart extends Document {
+  user: mongoose.Types.ObjectId;
+  items: ICartItem[];
+  createdAt: Date;
+  updatedAt: Date;
+  totalPrice?: number;
+  totalItems?: number;
+}
