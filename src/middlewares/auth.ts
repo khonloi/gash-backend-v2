@@ -72,6 +72,43 @@ export const protect: RequestHandler = catchAsync(
 );
 
 /**
+ * Optional Auth: Authenticate user if token exists, but don't fail if it doesn't
+ */
+export const optionalAuth: RequestHandler = catchAsync(
+  async (req: Request, _res: Response, next: NextFunction): Promise<void> => {
+    let token: string | undefined;
+
+    if (
+      req.headers.authorization &&
+      req.headers.authorization.startsWith('Bearer ')
+    ) {
+      token = req.headers.authorization.split(' ')[1];
+    }
+
+    if (!token) {
+      return next();
+    }
+
+    try {
+      const decoded = verifyToken(token);
+      const currentUser = await User.findById(decoded.id);
+
+      if (
+        currentUser &&
+        currentUser.isActive &&
+        !(decoded.iat && currentUser.changedPasswordAfter(decoded.iat))
+      ) {
+        req.user = currentUser;
+      }
+    } catch {
+      // Ignore token verification errors for optional auth
+    }
+
+    next();
+  }
+);
+
+/**
  * Restrict routes to specific user roles
  */
 export const restrictTo = (...roles: UserRole[]): RequestHandler => {

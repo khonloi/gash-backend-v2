@@ -67,6 +67,7 @@ export interface PaginatedResult<T> {
 export type QueryString = Record<string, any>;
 
 export * from './user.js';
+export * from './order.js';
 
 export interface ICartItem {
   product: mongoose.Types.ObjectId | IProduct;

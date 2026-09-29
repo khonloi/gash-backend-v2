@@ -13,6 +13,7 @@ import productRouter from './routes/productRoutes.js';
 import authRouter from './routes/authRoutes.js';
 import userRouter from './routes/userRoutes.js';
 import cartRouter from './routes/cartRoutes.js';
+import orderRouter from './routes/orderRoutes.js';
 
 const app: Application = express();
 
@@ -103,6 +104,7 @@ app.use('/api/v1/auth', authRouter);
 app.use('/api/v1/users', userRouter);
 app.use('/api/v1/products', productRouter);
 app.use('/api/v1/cart', cartRouter);
+app.use('/api/v1/orders', orderRouter);
 
 // Health check endpoint
 app.get('/api/v1/health', healthCheck);
