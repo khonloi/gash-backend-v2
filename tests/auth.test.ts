@@ -3,6 +3,7 @@ import mongoose from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import app from '../src/app.js';
 import { User } from '../src/models/User.js';
+import { createTokenHash } from '../src/utils/crypto.js';
 
 let mongoServer: MongoMemoryServer;
 
@@ -334,6 +335,101 @@ describe('Auth Integration Tests', () => {
 
       expect(res.statusCode).toBe(400);
       expect(res.body.message).toMatch(/invalid or has expired/i);
+    });
+  });
+
+  describe('POST /api/v1/auth/refresh-token', () => {
+    it('should store hashed tokens in DB and successfully rotate tokens', async () => {
+      const registerRes = await request(app)
+        .post('/api/v1/auth/register')
+        .send(sampleUser);
+
+      const rawRefreshToken = registerRes.body.data.tokens.refreshToken;
+
+      // Verify that database stores the SHA-256 hash, NOT the raw JWT token
+      const dbUser = await User.findOne({
+        email: sampleUser.email.toLowerCase(),
+      }).select('+refreshTokens');
+
+      expect(dbUser?.refreshTokens).toHaveLength(1);
+      expect(dbUser?.refreshTokens[0].token).toBe(
+        createTokenHash(rawRefreshToken)
+      );
+      expect(dbUser?.refreshTokens[0].token).not.toBe(rawRefreshToken);
+
+      // Perform refresh
+      const refreshRes = await request(app)
+        .post('/api/v1/auth/refresh-token')
+        .send({ refreshToken: rawRefreshToken });
+
+      expect(refreshRes.statusCode).toBe(200);
+      expect(refreshRes.body.status).toBe('success');
+      expect(refreshRes.body.data.tokens).toHaveProperty('accessToken');
+      expect(refreshRes.body.data.tokens).toHaveProperty('refreshToken');
+
+      const rotatedRefreshToken = refreshRes.body.data.tokens.refreshToken;
+      expect(rotatedRefreshToken).not.toBe(rawRefreshToken);
+
+      // Verify DB now holds the hash of rotated token
+      const updatedUser = await User.findOne({
+        email: sampleUser.email.toLowerCase(),
+      }).select('+refreshTokens');
+
+      expect(updatedUser?.refreshTokens).toHaveLength(1);
+      expect(updatedUser?.refreshTokens[0].token).toBe(
+        createTokenHash(rotatedRefreshToken)
+      );
+    });
+
+    it('should detect reuse of already rotated token and wipe all user sessions', async () => {
+      const registerRes = await request(app)
+        .post('/api/v1/auth/register')
+        .send(sampleUser);
+
+      const initialRefreshToken = registerRes.body.data.tokens.refreshToken;
+
+      // First rotation
+      await request(app)
+        .post('/api/v1/auth/refresh-token')
+        .send({ refreshToken: initialRefreshToken });
+
+      // Attempt reuse of the initial (now invalidated) token
+      const reuseRes = await request(app)
+        .post('/api/v1/auth/refresh-token')
+        .send({ refreshToken: initialRefreshToken });
+
+      expect(reuseRes.statusCode).toBe(401);
+      expect(reuseRes.body.message).toMatch(/Invalid or reused refresh token/i);
+
+      // Verify all sessions were purged for security
+      const dbUser = await User.findOne({
+        email: sampleUser.email.toLowerCase(),
+      }).select('+refreshTokens');
+      expect(dbUser?.refreshTokens).toHaveLength(0);
+    });
+  });
+
+  describe('POST /api/v1/auth/logout', () => {
+    it('should invalidate the specific refresh token upon logout', async () => {
+      const registerRes = await request(app)
+        .post('/api/v1/auth/register')
+        .send(sampleUser);
+
+      const { accessToken, refreshToken } = registerRes.body.data.tokens;
+
+      const logoutRes = await request(app)
+        .post('/api/v1/auth/logout')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .send({ refreshToken });
+
+      expect(logoutRes.statusCode).toBe(200);
+      expect(logoutRes.body.message).toMatch(/Logged out successfully/i);
+
+      // Verify the token was pulled from database
+      const dbUser = await User.findOne({
+        email: sampleUser.email.toLowerCase(),
+      }).select('+refreshTokens');
+      expect(dbUser?.refreshTokens).toHaveLength(0);
     });
   });
 });

@@ -9,6 +9,7 @@ import hpp from 'hpp';
 import { globalErrorHandler } from './middlewares/errorHandler.js';
 import { AppError } from './utils/AppError.js';
 import { env } from './config/env.js';
+import { logger } from './config/logger.js';
 import { healthCheck } from './controllers/healthController.js';
 import productRouter from './routes/productRoutes.js';
 import authRouter from './routes/authRoutes.js';
@@ -18,8 +19,45 @@ import orderRouter from './routes/orderRoutes.js';
 
 const app: Application = express();
 
+// Parse configured CORS allowed origins
+const configuredOrigins = env.ALLOWED_ORIGINS
+  ? env.ALLOWED_ORIGINS.split(',')
+      .map((o) => o.trim())
+      .filter(Boolean)
+  : [];
+
+const allowedOrigins = Array.from(
+  new Set([
+    env.FRONTEND_URL,
+    'http://localhost:3000',
+    'http://127.0.0.1:3000',
+    ...configuredOrigins,
+  ])
+).filter(Boolean);
+
 // Set security HTTP headers
-app.use(helmet());
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        imgSrc: ["'self'", 'data:', 'https:'],
+        connectSrc: ["'self'", ...allowedOrigins],
+      },
+    },
+    hsts: {
+      maxAge: 31536000, // 1 year in seconds
+      includeSubDomains: true,
+      preload: true,
+    },
+    referrerPolicy: {
+      policy: 'strict-origin-when-cross-origin',
+    },
+    crossOriginResourcePolicy: { policy: 'cross-origin' },
+  })
+);
 
 // Development logging
 if (env.NODE_ENV === 'development') {
@@ -75,24 +113,19 @@ app.use(
 app.use(compression());
 
 // Implement CORS
-const allowedOrigins = [
-  env.FRONTEND_URL,
-  'http://localhost:3000',
-  'http://127.0.0.1:3000',
-].filter(Boolean) as string[];
-
 app.use(
   cors({
     origin: (origin, callback) => {
-      if (
-        !origin ||
-        allowedOrigins.includes(origin) ||
-        env.NODE_ENV !== 'production'
-      ) {
-        callback(null, true);
-      } else {
-        callback(new Error(`Origin ${origin} not allowed by CORS`));
+      if (!origin || allowedOrigins.includes(origin)) {
+        return callback(null, true);
       }
+      if (env.NODE_ENV !== 'production') {
+        logger.warn(
+          `CORS: Origin '${origin}' allowed in development mode but not in whitelist`
+        );
+        return callback(null, true);
+      }
+      return callback(new Error(`Origin ${origin} not allowed by CORS`));
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],

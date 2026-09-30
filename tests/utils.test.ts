@@ -1,6 +1,7 @@
 import mongoose from 'mongoose';
 import { toSafeUser } from '../src/utils/sanitize.js';
 import { resolveOwnerId } from '../src/utils/resolveOwnerId.js';
+import { sanitizeInPlace } from '../src/middlewares/mongoSanitize.js';
 import { IUser } from '../src/types/index.js';
 
 describe('Utility Unit Tests', () => {
@@ -80,6 +81,50 @@ describe('Utility Unit Tests', () => {
     it('should return undefined for null or undefined input', () => {
       expect(resolveOwnerId(undefined)).toBeUndefined();
       expect(resolveOwnerId(null)).toBeUndefined();
+    });
+  });
+
+  describe('sanitizeInPlace', () => {
+    it('should recursively remove $ operators and dot keys from objects and arrays in place', () => {
+      const payload: Record<string, unknown> = {
+        normalKey: 'valid',
+        $topLevelBad: 'hacker',
+        'key.with.dot': 'bad',
+        nested: {
+          goodKey: 123,
+          $gt: 0,
+          'inner.dot': true,
+        },
+        items: [
+          { safe: 'item1' },
+          { $where: 'sleep(1000)', fine: 'item2' },
+          [{ 'deep.dot': false, allowed: true }],
+        ],
+      };
+
+      sanitizeInPlace(payload);
+
+      expect(payload).toEqual({
+        normalKey: 'valid',
+        nested: {
+          goodKey: 123,
+        },
+        items: [{ safe: 'item1' }, { fine: 'item2' }, [{ allowed: true }]],
+      });
+      expect(payload['$topLevelBad']).toBeUndefined();
+      expect(payload['key.with.dot']).toBeUndefined();
+      expect(
+        (payload.nested as Record<string, unknown>)['$gt']
+      ).toBeUndefined();
+    });
+
+    it('should handle primitives, null, and empty objects without error', () => {
+      expect(() => sanitizeInPlace(null)).not.toThrow();
+      expect(() => sanitizeInPlace(undefined)).not.toThrow();
+      expect(() => sanitizeInPlace('string')).not.toThrow();
+      expect(() => sanitizeInPlace(123)).not.toThrow();
+      expect(() => sanitizeInPlace({})).not.toThrow();
+      expect(() => sanitizeInPlace([])).not.toThrow();
     });
   });
 });

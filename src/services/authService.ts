@@ -57,7 +57,11 @@ export class AuthService {
     // Store refresh token
     const expiresAt = new Date(Date.now() + REFRESH_TOKEN_EXPIRES_MS);
     user.refreshTokens = [
-      { token: refreshToken, expiresAt, createdAt: new Date() },
+      {
+        token: createTokenHash(refreshToken),
+        expiresAt,
+        createdAt: new Date(),
+      },
     ];
 
     await user.save();
@@ -101,7 +105,7 @@ export class AuthService {
       (rt) => rt.expiresAt > new Date()
     );
     activeTokens.push({
-      token: refreshToken,
+      token: createTokenHash(refreshToken),
       expiresAt,
       createdAt: new Date(),
     });
@@ -144,8 +148,9 @@ export class AuthService {
     }
 
     // Check if token exists in user's active list
+    const hashedIncomingToken = createTokenHash(refreshToken);
     const tokenIndex = user.refreshTokens.findIndex(
-      (rt) => rt.token === refreshToken
+      (rt) => rt.token === hashedIncomingToken
     );
 
     if (tokenIndex === -1) {
@@ -172,7 +177,7 @@ export class AuthService {
 
     const expiresAt = new Date(Date.now() + REFRESH_TOKEN_EXPIRES_MS);
     user.refreshTokens.push({
-      token: newRefreshToken,
+      token: createTokenHash(newRefreshToken),
       expiresAt,
       createdAt: new Date(),
     });
@@ -190,8 +195,9 @@ export class AuthService {
    */
   async logout(userId: string, refreshToken?: string): Promise<void> {
     if (refreshToken) {
+      const hashedToken = createTokenHash(refreshToken);
       await User.findByIdAndUpdate(userId, {
-        $pull: { refreshTokens: { token: refreshToken } },
+        $pull: { refreshTokens: { token: hashedToken } },
       });
     }
   }
@@ -253,7 +259,7 @@ export class AuthService {
 
     const expiresAt = new Date(Date.now() + REFRESH_TOKEN_EXPIRES_MS);
     user.refreshTokens.push({
-      token: refreshToken,
+      token: createTokenHash(refreshToken),
       expiresAt,
       createdAt: new Date(),
     });

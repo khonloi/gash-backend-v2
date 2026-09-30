@@ -8,6 +8,7 @@ import {
   UserRole,
 } from '../types/index.js';
 import { AppError } from '../utils/AppError.js';
+import { createTokenHash } from '../utils/crypto.js';
 import { APIFeatures } from '../utils/apiFeatures.js';
 import { signAccessToken, signRefreshToken } from '../utils/jwt.js';
 import {
@@ -79,7 +80,7 @@ export class UserService {
 
     const expiresAt = new Date(Date.now() + REFRESH_TOKEN_EXPIRES_MS);
     user.refreshTokens.push({
-      token: refreshToken,
+      token: createTokenHash(refreshToken),
       expiresAt,
       createdAt: new Date(),
     });

@@ -21,6 +21,7 @@ const envSchema = z.object({
   JWT_REFRESH_EXPIRES_IN: z.string().default('7d'),
   BCRYPT_COST: z.coerce.number().min(4).max(16).default(12),
   FRONTEND_URL: z.string().default('http://localhost:3000'),
+  ALLOWED_ORIGINS: z.string().optional(),
 });
 
 const parsed = envSchema.safeParse(process.env);
