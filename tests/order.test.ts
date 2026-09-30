@@ -246,6 +246,129 @@ describe('Order API Integration Tests', () => {
       product = await Product.findById(testProduct._id);
       expect(product?.quantity).toBe(10);
     });
+
+    it('should fail with 400 when attempting to cancel an already cancelled order', async () => {
+      const orderRes = await request(app)
+        .post('/api/v1/orders')
+        .set('Authorization', `Bearer ${customerToken}`)
+        .send({
+          shippingAddress: sampleShippingAddress,
+          items: [{ productId: testProduct._id.toString(), quantity: 1 }],
+        });
+
+      const orderId = orderRes.body.data.order._id;
+
+      // Cancel once
+      await request(app)
+        .patch(`/api/v1/orders/${orderId}/cancel`)
+        .set('Authorization', `Bearer ${customerToken}`)
+        .send({});
+
+      // Attempt second cancellation
+      const secondCancelRes = await request(app)
+        .patch(`/api/v1/orders/${orderId}/cancel`)
+        .set('Authorization', `Bearer ${customerToken}`)
+        .send({});
+
+      expect(secondCancelRes.statusCode).toBe(400);
+      expect(secondCancelRes.body.message).toMatch(/already cancelled/i);
+    });
+
+    it('should fail with 400 when attempting to cancel a delivered order', async () => {
+      const orderRes = await request(app)
+        .post('/api/v1/orders')
+        .set('Authorization', `Bearer ${customerToken}`)
+        .send({
+          shippingAddress: sampleShippingAddress,
+          items: [{ productId: testProduct._id.toString(), quantity: 1 }],
+        });
+
+      const orderId = orderRes.body.data.order._id;
+
+      // Admin advances status to shipped, then delivered
+      await request(app)
+        .patch(`/api/v1/orders/${orderId}/status`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ status: 'shipped' });
+
+      await request(app)
+        .patch(`/api/v1/orders/${orderId}/status`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ status: 'delivered' });
+
+      // Customer attempts to cancel delivered order
+      const cancelRes = await request(app)
+        .patch(`/api/v1/orders/${orderId}/cancel`)
+        .set('Authorization', `Bearer ${customerToken}`)
+        .send({});
+
+      expect(cancelRes.statusCode).toBe(400);
+      expect(cancelRes.body.message).toMatch(/cannot be cancelled/i);
+    });
+
+    it('should fail with 400 when customer attempts to cancel an order already in shipped status', async () => {
+      const orderRes = await request(app)
+        .post('/api/v1/orders')
+        .set('Authorization', `Bearer ${customerToken}`)
+        .send({
+          shippingAddress: sampleShippingAddress,
+          items: [{ productId: testProduct._id.toString(), quantity: 1 }],
+        });
+
+      const orderId = orderRes.body.data.order._id;
+
+      // Admin advances status to shipped
+      await request(app)
+        .patch(`/api/v1/orders/${orderId}/status`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ status: 'shipped' });
+
+      // Customer attempts to cancel shipped order
+      const cancelRes = await request(app)
+        .patch(`/api/v1/orders/${orderId}/cancel`)
+        .set('Authorization', `Bearer ${customerToken}`)
+        .send({});
+
+      expect(cancelRes.statusCode).toBe(400);
+      expect(cancelRes.body.message).toMatch(
+        /cannot be cancelled by customer/i
+      );
+    });
+
+    it('should fail with 403 when customer tries to cancel another user order', async () => {
+      // Create second customer
+      const secondUser = await User.create({
+        firstName: 'Other',
+        lastName: 'Person',
+        email: 'other@example.com',
+        password: 'Password123!',
+        role: 'customer',
+      });
+      const secondToken = signAccessToken(
+        secondUser._id.toString(),
+        'customer'
+      );
+
+      // First customer places order
+      const orderRes = await request(app)
+        .post('/api/v1/orders')
+        .set('Authorization', `Bearer ${customerToken}`)
+        .send({
+          shippingAddress: sampleShippingAddress,
+          items: [{ productId: testProduct._id.toString(), quantity: 1 }],
+        });
+
+      const orderId = orderRes.body.data.order._id;
+
+      // Second customer attempts to cancel first customer's order
+      const cancelRes = await request(app)
+        .patch(`/api/v1/orders/${orderId}/cancel`)
+        .set('Authorization', `Bearer ${secondToken}`)
+        .send({});
+
+      expect(cancelRes.statusCode).toBe(403);
+      expect(cancelRes.body.message).toMatch(/not have permission/i);
+    });
   });
 
   describe('Admin Operations: GET /api/v1/orders and status update', () => {

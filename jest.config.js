@@ -16,4 +16,17 @@ export default {
   },
   setupFiles: ['dotenv/config'],
   coveragePathIgnorePatterns: ['/node_modules/'],
+  collectCoverageFrom: [
+    'src/**/*.ts',
+    '!src/server.ts',
+    '!src/config/db.ts',
+  ],
+  coverageThreshold: {
+    global: {
+      branches: 65,
+      functions: 75,
+      lines: 75,
+      statements: 75,
+    },
+  },
 };

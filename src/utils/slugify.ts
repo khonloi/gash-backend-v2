@@ -8,7 +8,7 @@ export const slugify = (text: string): string => {
     .replace(/[\u0300-\u036f]/g, '') // Remove accent marks
     .toLowerCase()
     .trim()
-    .replace(/[^a-z0-9\s-]/g, '') // Remove invalid chars
+    .replace(/[^a-z0-9\s_-]/g, '') // Remove invalid chars
     .replace(/[\s_-]+/g, '-') // Replace spaces and underscores with a single hyphen
     .replace(/^-+|-+$/g, ''); // Trim leading and trailing hyphens
 };
