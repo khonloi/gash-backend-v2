@@ -34,7 +34,9 @@ export class UserService {
    * Update current user profile fields (excludes password and role)
    */
   async updateMe(userId: string, data: UpdateMeInput): Promise<IUser> {
-    const filteredData: Record<string, any> = {};
+    const filteredData: Partial<
+      Pick<IUser, 'firstName' | 'lastName' | 'phone' | 'avatar'>
+    > = {};
     if (data.firstName !== undefined) filteredData.firstName = data.firstName;
     if (data.lastName !== undefined) filteredData.lastName = data.lastName;
     if (data.phone !== undefined) filteredData.phone = data.phone;

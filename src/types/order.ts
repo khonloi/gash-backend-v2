@@ -1,5 +1,6 @@
 import mongoose, { Document } from 'mongoose';
 import { IProduct } from './index.js';
+import { IUser } from './user.js';
 
 export type OrderStatus =
   | 'pending'
@@ -40,7 +41,7 @@ export interface IShippingAddress {
 
 export interface IOrder extends Document {
   orderNumber: string;
-  user?: mongoose.Types.ObjectId;
+  user?: mongoose.Types.ObjectId | IUser;
   items: IOrderItem[];
   shippingAddress: IShippingAddress;
   shippingMethod: ShippingMethod;

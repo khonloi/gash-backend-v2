@@ -1,6 +1,11 @@
 import mongoose from 'mongoose';
 import { Product } from '../models/Product.js';
-import { IProduct, PaginatedResult, QueryString } from '../types/index.js';
+import {
+  IProduct,
+  IProductCategoryStats,
+  PaginatedResult,
+  QueryString,
+} from '../types/index.js';
 import { AppError } from '../utils/AppError.js';
 import { APIFeatures } from '../utils/apiFeatures.js';
 import { slugify } from '../utils/slugify.js';
@@ -221,7 +226,7 @@ export class ProductService {
   /**
    * Aggregation pipeline for category statistics
    */
-  async getProductStats(): Promise<any[]> {
+  async getProductStats(): Promise<IProductCategoryStats[]> {
     const stats = await Product.aggregate([
       {
         $group: {

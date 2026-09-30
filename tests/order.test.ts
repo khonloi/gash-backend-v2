@@ -72,12 +72,34 @@ const sampleShippingAddress = {
 
 describe('Order API Integration Tests', () => {
   describe('POST /api/v1/orders', () => {
-    it('should fail with 401 when unauthenticated', async () => {
+    it('should fail with 400 when placing order with no items and not logged in', async () => {
       const res = await request(app).post('/api/v1/orders').send({
         shippingAddress: sampleShippingAddress,
       });
 
-      expect(res.statusCode).toBe(401);
+      expect(res.statusCode).toBe(400);
+      expect(res.body.message).toMatch(/Order must contain at least one item/i);
+    });
+
+    it('should allow guest to place an order with explicit items', async () => {
+      const res = await request(app)
+        .post('/api/v1/orders')
+        .send({
+          shippingAddress: sampleShippingAddress,
+          shippingMethod: 'standard',
+          paymentMethod: 'cod',
+          contactEmail: 'guest@example.com',
+          items: [
+            {
+              productId: testProduct._id.toString(),
+              quantity: 1,
+            },
+          ],
+        });
+
+      expect(res.statusCode).toBe(201);
+      expect(res.body.status).toBe('success');
+      expect(res.body.data.order.user).toBeUndefined();
     });
 
     it('should successfully place an order with explicit items and decrement stock', async () => {
@@ -189,6 +211,11 @@ describe('Order API Integration Tests', () => {
       expect(res.body.status).toBe('success');
       expect(res.body.results).toBe(1);
       expect(res.body.data.orders.length).toBe(1);
+    });
+
+    it('should fail with 401 when unauthenticated', async () => {
+      const res = await request(app).get('/api/v1/orders/my');
+      expect(res.statusCode).toBe(401);
     });
   });
 

@@ -2,20 +2,55 @@ import { Request, Response, NextFunction } from 'express';
 import { logger } from '../config/logger.js';
 import { AppError } from '../utils/AppError.js';
 
-const handleCastErrorDB = (err: any): AppError => {
-  const message = `Invalid ${err.path}: ${err.value}.`;
+interface MongoCastError extends Error {
+  name: 'CastError';
+  path: string;
+  value: unknown;
+}
+
+interface MongoDuplicateKeyError extends Error {
+  code: number;
+  errmsg?: string;
+}
+
+interface MongoValidationErrorItem {
+  message: string;
+}
+
+interface MongoValidationError extends Error {
+  name: 'ValidationError';
+  errors: Record<string, MongoValidationErrorItem>;
+}
+
+export interface AppErrorLike extends Partial<Error> {
+  statusCode?: number;
+  status?: string;
+  isOperational?: boolean;
+  code?: number;
+  path?: string;
+  value?: unknown;
+  errmsg?: string;
+  errors?: Record<string, MongoValidationErrorItem>;
+}
+
+const handleCastErrorDB = (err: MongoCastError | AppErrorLike): AppError => {
+  const message = `Invalid ${String(err.path)}: ${String(err.value)}.`;
   return new AppError(message, 400);
 };
 
-const handleDuplicateFieldsDB = (err: any): AppError => {
+const handleDuplicateFieldsDB = (
+  err: MongoDuplicateKeyError | AppErrorLike
+): AppError => {
   const match = err.errmsg?.match(/(["'])(\\?.)*?\1/);
   const value = match ? match[0] : 'unknown';
   const message = `Duplicate field value: ${value}. Please use another value!`;
   return new AppError(message, 400);
 };
 
-const handleValidationErrorDB = (err: any): AppError => {
-  const errors = Object.values(err.errors || {}).map((el: any) => el.message);
+const handleValidationErrorDB = (
+  err: MongoValidationError | AppErrorLike
+): AppError => {
+  const errors = Object.values(err.errors || {}).map((el) => el.message);
   const message = `Invalid input data. ${errors.join('. ')}`;
   return new AppError(message, 400);
 };
@@ -26,19 +61,19 @@ const handleJWTError = (): AppError =>
 const handleJWTExpiredError = (): AppError =>
   new AppError('Your token has expired. Please log in again.', 401);
 
-const sendErrorDev = (err: any, res: Response): void => {
-  res.status(err.statusCode).json({
-    status: err.status,
+const sendErrorDev = (err: AppErrorLike, res: Response): void => {
+  res.status(err.statusCode || 500).json({
+    status: err.status || 'error',
     error: err,
     message: err.message,
     stack: err.stack,
   });
 };
 
-const sendErrorProd = (err: any, res: Response): void => {
+const sendErrorProd = (err: AppErrorLike, res: Response): void => {
   if (err.isOperational) {
-    res.status(err.statusCode).json({
-      status: err.status,
+    res.status(err.statusCode || 500).json({
+      status: err.status || 'error',
       message: err.message,
     });
   } else {
@@ -51,7 +86,7 @@ const sendErrorProd = (err: any, res: Response): void => {
 };
 
 export const globalErrorHandler = (
-  err: any,
+  err: AppErrorLike,
   _req: Request,
   res: Response,
   _next: NextFunction
@@ -62,7 +97,7 @@ export const globalErrorHandler = (
   if (process.env.NODE_ENV === 'development') {
     sendErrorDev(err, res);
   } else if (process.env.NODE_ENV === 'production') {
-    let error = { ...err, message: err.message, name: err.name };
+    let error: AppErrorLike = { ...err, message: err.message, name: err.name };
 
     if (error.name === 'CastError') error = handleCastErrorDB(error);
     if (error.code === 11000) error = handleDuplicateFieldsDB(error);

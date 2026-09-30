@@ -25,14 +25,14 @@ export interface AuthResponse {
 }
 
 export const toSafeUser = (user: IUser): Partial<IUser> => {
-  const obj = user.toObject() as Record<string, any>;
+  const obj: Partial<IUser> & Record<string, unknown> = user.toObject();
   delete obj.password;
   delete obj.refreshTokens;
   delete obj.emailVerificationToken;
   delete obj.emailVerificationExpires;
   delete obj.passwordResetToken;
   delete obj.passwordResetExpires;
-  return obj as Partial<IUser>;
+  return obj;
 };
 
 export class AuthService {

@@ -95,7 +95,7 @@ export class CartService {
       throw new AppError('Cart not found', 404);
     }
 
-    const item = cart.items.find((i) => (i as any)._id.toString() === itemId);
+    const item = cart.items.find((i) => i._id?.toString() === itemId);
     if (!item) {
       throw new AppError('Item not found in cart', 404);
     }
@@ -131,9 +131,7 @@ export class CartService {
       throw new AppError('Cart not found', 404);
     }
 
-    cart.items = cart.items.filter(
-      (i) => (i as any)._id.toString() !== itemId
-    ) as any;
+    cart.items = cart.items.filter((i) => i._id?.toString() !== itemId);
     await cart.save();
 
     return cart.populate(
@@ -145,7 +143,7 @@ export class CartService {
   async clearCart(userId: string): Promise<void> {
     const cart = await Cart.findOne({ user: userId });
     if (cart) {
-      cart.items = [] as any;
+      cart.items = [];
       await cart.save();
     }
   }

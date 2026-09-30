@@ -23,6 +23,16 @@ export interface IProductDimensions {
   height?: number;
 }
 
+export interface IProductCategoryStats {
+  category: string;
+  numProducts: number;
+  avgPrice: number;
+  minPrice: number;
+  maxPrice: number;
+  totalQuantity: number;
+  avgRating: number;
+}
+
 export interface IProduct extends Document {
   name: string;
   slug: string;
@@ -64,12 +74,22 @@ export interface PaginatedResult<T> {
   totalResults: number;
 }
 
-export type QueryString = Record<string, any>;
+export interface QueryString {
+  page?: string | number;
+  limit?: string | number;
+  sort?: string;
+  fields?: string;
+  keyword?: string;
+  minPrice?: string | number;
+  maxPrice?: string | number;
+  [key: string]: unknown;
+}
 
 export * from './user.js';
 export * from './order.js';
 
 export interface ICartItem {
+  _id?: mongoose.Types.ObjectId;
   product: mongoose.Types.ObjectId | IProduct;
   quantity: number;
   size?: string;

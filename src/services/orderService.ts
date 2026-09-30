@@ -12,6 +12,7 @@ import {
 } from '../types/index.js';
 import { AppError } from '../utils/AppError.js';
 import { APIFeatures } from '../utils/apiFeatures.js';
+import { resolveOwnerId } from '../utils/resolveOwnerId.js';
 import { CreateOrderInput } from '../validations/orderValidation.js';
 
 export class OrderService {
@@ -193,11 +194,7 @@ export class OrderService {
     }
 
     // Check ownership unless admin
-    const ownerId = order.user
-      ? (order.user as any)._id
-        ? (order.user as any)._id.toString()
-        : order.user.toString()
-      : undefined;
+    const ownerId = resolveOwnerId(order.user);
 
     if (userRole !== 'admin' && ownerId !== userId) {
       throw new AppError('You do not have permission to view this order', 403);
@@ -217,9 +214,9 @@ export class OrderService {
       throw new AppError(`Invalid user ID format: "${userId}"`, 400);
     }
 
-    const baseFilter: Record<string, any> = { user: userId };
+    const baseFilter: Record<string, unknown> = { user: userId };
     if (queryString.status) {
-      baseFilter.status = queryString.status;
+      baseFilter.status = String(queryString.status) as OrderStatus;
     }
 
     // 1) Count total documents
@@ -293,11 +290,7 @@ export class OrderService {
       throw new AppError(`Order not found with identifier "${orderId}"`, 404);
     }
 
-    const ownerId = order.user
-      ? (order.user as any)._id
-        ? (order.user as any)._id.toString()
-        : order.user.toString()
-      : undefined;
+    const ownerId = resolveOwnerId(order.user);
 
     if (userRole !== 'admin' && ownerId !== userId) {
       throw new AppError(

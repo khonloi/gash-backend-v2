@@ -26,9 +26,13 @@ const server = app.listen(PORT, () => {
   logger.info(`Server running in ${process.env.NODE_ENV} mode on port ${PORT}`);
 });
 
-process.on('unhandledRejection', (err: any) => {
+process.on('unhandledRejection', (reason: unknown) => {
   logger.error('UNHANDLED REJECTION! Shutting down...');
-  logger.error(`${err?.name}: ${err?.message}`);
+  if (reason instanceof Error) {
+    logger.error(`${reason.name}: ${reason.message}`);
+  } else {
+    logger.error(`Reason: ${String(reason)}`);
+  }
   server.close(() => {
     process.exit(1);
   });
