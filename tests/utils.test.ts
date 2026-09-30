@@ -1,4 +1,4 @@
-import mongoose from 'mongoose';
+import mongoose, { Query } from 'mongoose';
 import { toSafeUser } from '../src/utils/sanitize.js';
 import { resolveOwnerId } from '../src/utils/resolveOwnerId.js';
 import { sanitizeInPlace } from '../src/middlewares/mongoSanitize.js';
@@ -6,6 +6,7 @@ import { slugify } from '../src/utils/slugify.js';
 import { createTokenHash, generateRandomToken } from '../src/utils/crypto.js';
 import { AppError } from '../src/utils/AppError.js';
 import { APIFeatures } from '../src/utils/apiFeatures.js';
+import { sendSuccess } from '../src/utils/response.js';
 import { IUser } from '../src/types/index.js';
 
 describe('Utility Unit Tests', () => {
@@ -212,14 +213,27 @@ describe('Utility Unit Tests', () => {
   });
 
   describe('APIFeatures', () => {
-    const createMockQuery = () => {
-      const query: any = {};
-      const createChainableFn = () => {
+    type ChainableMock = {
+      (...args: unknown[]): Record<string, unknown>;
+      calls: unknown[][];
+    };
+    interface MockMongooseQuery {
+      find: ChainableMock;
+      sort: ChainableMock;
+      select: ChainableMock;
+      skip: ChainableMock;
+      limit: ChainableMock;
+      [key: string]: unknown;
+    }
+
+    const createMockQuery = (): MockMongooseQuery => {
+      const query: Record<string, unknown> = {};
+      const createChainableFn = (): ChainableMock => {
         const calls: unknown[][] = [];
-        const fn: any = (...args: unknown[]) => {
+        const fn = ((...args: unknown[]) => {
           calls.push(args);
           return query;
-        };
+        }) as ChainableMock;
         fn.calls = calls;
         return fn;
       };
@@ -228,7 +242,7 @@ describe('Utility Unit Tests', () => {
       query.select = createChainableFn();
       query.skip = createChainableFn();
       query.limit = createChainableFn();
-      return query;
+      return query as unknown as MockMongooseQuery;
     };
 
     it('should filter query parameters and convert comparison operators', () => {
@@ -241,7 +255,10 @@ describe('Utility Unit Tests', () => {
         sort: 'price',
       };
 
-      const features = new APIFeatures(mockQuery as any, queryString);
+      const features = new APIFeatures(
+        mockQuery as unknown as Query<unknown[], unknown>,
+        queryString
+      );
       features.filter();
 
       expect(mockQuery.find.calls[0][0]).toEqual({
@@ -252,9 +269,12 @@ describe('Utility Unit Tests', () => {
 
     it('should search using $text query when keyword is provided', () => {
       const mockQuery = createMockQuery();
-      const features = new APIFeatures(mockQuery as any, {
-        keyword: 'sneakers',
-      });
+      const features = new APIFeatures(
+        mockQuery as unknown as Query<unknown[], unknown>,
+        {
+          keyword: 'sneakers',
+        }
+      );
       features.search();
 
       expect(mockQuery.find.calls[0][0]).toEqual({
@@ -264,7 +284,10 @@ describe('Utility Unit Tests', () => {
 
     it('should not add $text query when keyword is missing or empty', () => {
       const mockQuery = createMockQuery();
-      const features = new APIFeatures(mockQuery as any, { keyword: '   ' });
+      const features = new APIFeatures(
+        mockQuery as unknown as Query<unknown[], unknown>,
+        { keyword: '   ' }
+      );
       features.search();
 
       expect(mockQuery.find.calls).toHaveLength(0);
@@ -272,34 +295,43 @@ describe('Utility Unit Tests', () => {
 
     it('should apply custom sort and fallback to -createdAt by default', () => {
       const mockQueryCustom = createMockQuery();
-      new APIFeatures(mockQueryCustom as any, {
+      new APIFeatures(mockQueryCustom as unknown as Query<unknown[], unknown>, {
         sort: 'price,-ratingsAverage',
       }).sort();
       expect(mockQueryCustom.sort.calls[0][0]).toBe('price -ratingsAverage');
 
       const mockQueryDefault = createMockQuery();
-      new APIFeatures(mockQueryDefault as any, {}).sort();
+      new APIFeatures(
+        mockQueryDefault as unknown as Query<unknown[], unknown>,
+        {}
+      ).sort();
       expect(mockQueryDefault.sort.calls[0][0]).toBe('-createdAt');
     });
 
     it('should project specified fields and exclude -__v by default', () => {
       const mockQueryCustom = createMockQuery();
-      new APIFeatures(mockQueryCustom as any, {
+      new APIFeatures(mockQueryCustom as unknown as Query<unknown[], unknown>, {
         fields: 'name,price,slug',
       }).limitFields();
       expect(mockQueryCustom.select.calls[0][0]).toBe('name price slug');
 
       const mockQueryDefault = createMockQuery();
-      new APIFeatures(mockQueryDefault as any, {}).limitFields();
+      new APIFeatures(
+        mockQueryDefault as unknown as Query<unknown[], unknown>,
+        {}
+      ).limitFields();
       expect(mockQueryDefault.select.calls[0][0]).toBe('-__v');
     });
 
     it('should paginate results and compute correct pagination metadata', () => {
       const mockQuery = createMockQuery();
-      const features = new APIFeatures(mockQuery as any, {
-        page: '3',
-        limit: '15',
-      });
+      const features = new APIFeatures(
+        mockQuery as unknown as Query<unknown[], unknown>,
+        {
+          page: '3',
+          limit: '15',
+        }
+      );
       features.paginate(50);
 
       expect(mockQuery.skip.calls[0][0]).toBe(30); // (3 - 1) * 15
@@ -309,6 +341,71 @@ describe('Utility Unit Tests', () => {
         limit: 15,
         totalPages: 4, // Math.ceil(50 / 15)
         totalResults: 50,
+      });
+    });
+  });
+
+  describe('sendSuccess response envelope', () => {
+    it('should format standard 200 response with status success', () => {
+      let sentStatus = 0;
+      let sentJson: unknown = null;
+      const res = {
+        status(code: number) {
+          sentStatus = code;
+          return this;
+        },
+        json(body: unknown) {
+          sentJson = body;
+          return this;
+        },
+      } as unknown as Parameters<typeof sendSuccess>[0];
+
+      sendSuccess(res, { item: 'val' });
+
+      expect(sentStatus).toBe(200);
+      expect(sentJson).toEqual({
+        status: 'success',
+        data: { item: 'val' },
+      });
+    });
+
+    it('should attach custom status code and metadata envelope', () => {
+      let sentStatus = 0;
+      let sentJson: unknown = null;
+      const res = {
+        status(code: number) {
+          sentStatus = code;
+          return this;
+        },
+        json(body: unknown) {
+          sentJson = body;
+          return this;
+        },
+      } as unknown as Parameters<typeof sendSuccess>[0];
+
+      sendSuccess(res, { items: [1, 2, 3] }, 201, {
+        results: 3,
+        pagination: {
+          page: 1,
+          limit: 10,
+          totalPages: 1,
+          totalResults: 3,
+        },
+        message: 'Created successfully',
+      });
+
+      expect(sentStatus).toBe(201);
+      expect(sentJson).toEqual({
+        status: 'success',
+        results: 3,
+        pagination: {
+          page: 1,
+          limit: 10,
+          totalPages: 1,
+          totalResults: 3,
+        },
+        message: 'Created successfully',
+        data: { items: [1, 2, 3] },
       });
     });
   });

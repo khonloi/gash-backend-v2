@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-const cartItemBaseSchema = z.object({
+export const cartItemBaseSchema = z.object({
   productId: z.string().min(1, 'Product ID is required'),
   quantity: z
     .number()
@@ -10,15 +10,7 @@ const cartItemBaseSchema = z.object({
   color: z.string().trim().optional(),
 });
 
-export const addToCartSchema = z.object({
-  productId: z.string().min(1, 'Product ID is required'),
-  quantity: z
-    .number()
-    .int('Quantity must be an integer')
-    .min(1, 'Quantity must be at least 1'),
-  size: z.string().trim().optional(),
-  color: z.string().trim().optional(),
-});
+export const addToCartSchema = cartItemBaseSchema;
 
 export const updateCartItemSchema = z.object({
   quantity: z

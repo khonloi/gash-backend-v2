@@ -7,12 +7,13 @@ import { User } from '../src/models/User.js';
 import { Order } from '../src/models/Order.js';
 import { Cart } from '../src/models/Cart.js';
 import { signAccessToken } from '../src/utils/jwt.js';
+import { IProduct } from '../src/types/index.js';
 
 let mongoServer: MongoMemoryServer;
 let customerToken: string;
 let customerId: string;
 let adminToken: string;
-let testProduct: any;
+let testProduct: IProduct;
 
 beforeAll(async () => {
   mongoServer = await MongoMemoryServer.create();

@@ -11,6 +11,7 @@ import { AppError } from './utils/AppError.js';
 import { env } from './config/env.js';
 import { logger } from './config/logger.js';
 import { healthCheck } from './controllers/healthController.js';
+import { requestId } from './middlewares/requestId.js';
 import productRouter from './routes/productRoutes.js';
 import authRouter from './routes/authRoutes.js';
 import userRouter from './routes/userRoutes.js';
@@ -18,6 +19,9 @@ import cartRouter from './routes/cartRoutes.js';
 import orderRouter from './routes/orderRoutes.js';
 
 const app: Application = express();
+
+// Assign correlation ID to all requests
+app.use(requestId);
 
 // Parse configured CORS allowed origins
 const configuredOrigins = env.ALLOWED_ORIGINS
@@ -129,7 +133,13 @@ app.use(
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+    allowedHeaders: [
+      'Content-Type',
+      'Authorization',
+      'X-Requested-With',
+      'X-Request-Id',
+    ],
+    exposedHeaders: ['X-Request-Id'],
   })
 );
 

@@ -5,6 +5,7 @@ import app from '../src/app.js';
 import { Product } from '../src/models/Product.js';
 import { User } from '../src/models/User.js';
 import { signAccessToken } from '../src/utils/jwt.js';
+import { IProductCategoryStats } from '../src/types/index.js';
 
 let mongoServer: MongoMemoryServer;
 let adminToken: string;
@@ -379,12 +380,13 @@ describe('Product API Integration Tests', () => {
       expect(Array.isArray(res.body.data.stats)).toBe(true);
       expect(res.body.data.stats.length).toBe(2);
 
-      const electronicsStat = res.body.data.stats.find(
-        (s: any) => s.category === 'Electronics'
+      const stats = res.body.data.stats as IProductCategoryStats[];
+      const electronicsStat = stats.find(
+        (s: IProductCategoryStats) => s.category === 'Electronics'
       );
       expect(electronicsStat).toBeDefined();
-      expect(electronicsStat.numProducts).toBe(2);
-      expect(electronicsStat.avgPrice).toBe(150);
+      expect(electronicsStat?.numProducts).toBe(2);
+      expect(electronicsStat?.avgPrice).toBe(150);
     });
   });
 

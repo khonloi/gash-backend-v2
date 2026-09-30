@@ -46,6 +46,39 @@ describe('App Endpoints', () => {
         'http://localhost:3000'
       );
       expect(res.headers['access-control-allow-credentials']).toBe('true');
+      expect(res.headers['access-control-expose-headers']).toMatch(
+        /X-Request-Id/i
+      );
+    });
+  });
+
+  describe('Request Correlation ID', () => {
+    it('should generate and return X-Request-Id header if not provided', async () => {
+      const res = await request(app).get('/api/v1/health');
+
+      expect(res.statusCode).toBe(200);
+      expect(res.headers['x-request-id']).toBeDefined();
+      // UUID v4 regex pattern
+      expect(res.headers['x-request-id']).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+      );
+    });
+
+    it('should preserve and echo back custom client X-Request-Id', async () => {
+      const customId = 'client-req-999-custom-id';
+      const res = await request(app)
+        .get('/api/v1/health')
+        .set('X-Request-Id', customId);
+
+      expect(res.statusCode).toBe(200);
+      expect(res.headers['x-request-id']).toBe(customId);
+    });
+
+    it('should attach X-Request-Id even to 404 responses', async () => {
+      const res = await request(app).get('/api/v1/unknown-route');
+
+      expect(res.statusCode).toBe(404);
+      expect(res.headers['x-request-id']).toBeDefined();
     });
   });
 });

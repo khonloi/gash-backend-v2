@@ -6,11 +6,12 @@ import { Cart } from '../src/models/Cart.js';
 import { Product } from '../src/models/Product.js';
 import { User } from '../src/models/User.js';
 import { signAccessToken } from '../src/utils/jwt.js';
+import { IProduct } from '../src/types/index.js';
 
 let mongoServer: MongoMemoryServer;
 let customerToken: string;
 let customerId: string;
-let testProduct: any;
+let testProduct: IProduct;
 
 beforeAll(async () => {
   mongoServer = await MongoMemoryServer.create();
@@ -352,18 +353,22 @@ describe('Cart Integration Tests', () => {
         });
 
       expect(mergeRes.statusCode).toBe(200);
-      const items = mergeRes.body.data.cart.items;
+      interface PopulatedItem {
+        product: { _id: string };
+        quantity: number;
+      }
+      const items = mergeRes.body.data.cart.items as PopulatedItem[];
       expect(items).toHaveLength(2);
 
       const mergedFirst = items.find(
-        (i: any) => i.product._id === testProduct._id.toString()
+        (i: PopulatedItem) => i.product._id === testProduct._id.toString()
       );
-      expect(mergedFirst.quantity).toBe(5); // 2 + 3
+      expect(mergedFirst?.quantity).toBe(5); // 2 + 3
 
       const mergedSecond = items.find(
-        (i: any) => i.product._id === secondProduct._id.toString()
+        (i: PopulatedItem) => i.product._id === secondProduct._id.toString()
       );
-      expect(mergedSecond.quantity).toBe(4); // capped at stock 4
+      expect(mergedSecond?.quantity).toBe(4); // capped at stock 4
     });
   });
 });

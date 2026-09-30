@@ -4,6 +4,9 @@ import { MongoMemoryServer } from 'mongodb-memory-server';
 import app from '../src/app.js';
 import { User } from '../src/models/User.js';
 import { signAccessToken } from '../src/utils/jwt.js';
+import { IAddress } from '../src/types/index.js';
+
+type SavedAddress = IAddress & { _id: string };
 
 let mongoServer: MongoMemoryServer;
 let customerToken: string;
@@ -201,16 +204,13 @@ describe('User Profile & Admin Integration Tests', () => {
         .send(secondAddress);
 
       expect(res.statusCode).toBe(201);
-      expect(res.body.data.addresses).toHaveLength(2);
+      const addresses = res.body.data.addresses as SavedAddress[];
+      expect(addresses).toHaveLength(2);
 
-      const first = res.body.data.addresses.find(
-        (a: any) => a.label === 'Home'
-      );
-      const second = res.body.data.addresses.find(
-        (a: any) => a.label === 'Work'
-      );
-      expect(first.isDefault).toBe(false);
-      expect(second.isDefault).toBe(true);
+      const first = addresses.find((a: SavedAddress) => a.label === 'Home');
+      const second = addresses.find((a: SavedAddress) => a.label === 'Work');
+      expect(first?.isDefault).toBe(false);
+      expect(second?.isDefault).toBe(true);
     });
 
     it('should update an existing address', async () => {
@@ -227,11 +227,12 @@ describe('User Profile & Admin Integration Tests', () => {
         .send({ city: 'Chicago', postalCode: '60601' });
 
       expect(res.statusCode).toBe(200);
-      const updated = res.body.data.addresses.find(
-        (a: any) => a._id === addressId
+      const updatedAddresses = res.body.data.addresses as SavedAddress[];
+      const updated = updatedAddresses.find(
+        (a: SavedAddress) => a._id === addressId
       );
-      expect(updated.city).toBe('Chicago');
-      expect(updated.postalCode).toBe('60601');
+      expect(updated?.city).toBe('Chicago');
+      expect(updated?.postalCode).toBe('60601');
     });
 
     it('should remove an address', async () => {

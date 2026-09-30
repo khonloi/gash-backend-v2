@@ -8,11 +8,14 @@ import {
   MergeCartInput,
 } from '../validations/cartValidation.js';
 
+export const CART_PRODUCT_PROJECTION =
+  'name slug price images quantity brand status';
+
 export class CartService {
   async getCart(userId: string): Promise<ICart> {
     let cart = await Cart.findOne({ user: userId }).populate(
       'items.product',
-      'name slug price images quantity brand status'
+      CART_PRODUCT_PROJECTION
     );
     if (!cart) {
       cart = await Cart.create({ user: userId, items: [] });
@@ -75,10 +78,7 @@ export class CartService {
     }
 
     await cart.save();
-    return cart.populate(
-      'items.product',
-      'name slug price images quantity brand status'
-    );
+    return cart.populate('items.product', CART_PRODUCT_PROJECTION);
   }
 
   async updateItemQty(
@@ -115,10 +115,7 @@ export class CartService {
     item.quantity = quantity;
     await cart.save();
 
-    return cart.populate(
-      'items.product',
-      'name slug price images quantity brand status'
-    );
+    return cart.populate('items.product', CART_PRODUCT_PROJECTION);
   }
 
   async removeItem(userId: string, itemId: string): Promise<ICart> {
@@ -134,10 +131,7 @@ export class CartService {
     cart.items = cart.items.filter((i) => i._id?.toString() !== itemId);
     await cart.save();
 
-    return cart.populate(
-      'items.product',
-      'name slug price images quantity brand status'
-    );
+    return cart.populate('items.product', CART_PRODUCT_PROJECTION);
   }
 
   async clearCart(userId: string): Promise<void> {
@@ -196,10 +190,7 @@ export class CartService {
     }
 
     await cart.save();
-    return cart.populate(
-      'items.product',
-      'name slug price images quantity brand status'
-    );
+    return cart.populate('items.product', CART_PRODUCT_PROJECTION);
   }
 }
 
