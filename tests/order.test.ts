@@ -285,5 +285,45 @@ describe('Order API Integration Tests', () => {
       expect(statusRes.body.data.order.status).toBe('shipped');
       expect(statusRes.body.data.order.shippedAt).toBeDefined();
     });
+
+    it('should reject illegal status transitions and terminal state changes', async () => {
+      // Customer places order
+      const orderRes = await request(app)
+        .post('/api/v1/orders')
+        .set('Authorization', `Bearer ${customerToken}`)
+        .send({
+          shippingAddress: sampleShippingAddress,
+          items: [{ productId: testProduct._id.toString(), quantity: 1 }],
+        });
+
+      const orderId = orderRes.body.data.order._id;
+
+      // Advance: pending -> shipped -> delivered
+      await request(app)
+        .patch(`/api/v1/orders/${orderId}/status`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ status: 'shipped' });
+
+      const deliveredRes = await request(app)
+        .patch(`/api/v1/orders/${orderId}/status`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ status: 'delivered' });
+
+      expect(deliveredRes.statusCode).toBe(200);
+      expect(deliveredRes.body.data.order.status).toBe('delivered');
+      expect(deliveredRes.body.data.order.deliveredAt).toBeDefined();
+      expect(deliveredRes.body.data.order.paymentStatus).toBe('paid'); // COD auto-paid on delivery
+
+      // Illegal transition: delivered -> pending
+      const backwardRes = await request(app)
+        .patch(`/api/v1/orders/${orderId}/status`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ status: 'pending' });
+
+      expect(backwardRes.statusCode).toBe(400);
+      expect(backwardRes.body.message).toMatch(
+        /Cannot transition order status/i
+      );
+    });
   });
 });

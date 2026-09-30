@@ -14,6 +14,10 @@ import { AppError } from '../utils/AppError.js';
 import { APIFeatures } from '../utils/apiFeatures.js';
 import { resolveOwnerId } from '../utils/resolveOwnerId.js';
 import { CreateOrderInput } from '../validations/orderValidation.js';
+import {
+  SHIPPING_FEES,
+  VALID_ORDER_STATUS_TRANSITIONS,
+} from '../config/constants.js';
 
 export class OrderService {
   /**
@@ -143,7 +147,10 @@ export class OrderService {
       (sum, item) => sum + item.price * item.quantity,
       0
     );
-    const shippingFee = data.shippingMethod === 'express' ? 50 : 30;
+    const shippingFee =
+      data.shippingMethod === 'express'
+        ? SHIPPING_FEES.EXPRESS
+        : SHIPPING_FEES.STANDARD;
     const total = subtotal + shippingFee;
 
     // 4) Create Order
@@ -361,6 +368,15 @@ export class OrderService {
 
     if (order.status === newStatus) {
       return order;
+    }
+
+    const allowedTransitions =
+      VALID_ORDER_STATUS_TRANSITIONS[order.status] || [];
+    if (!allowedTransitions.includes(newStatus)) {
+      throw new AppError(
+        `Cannot transition order status from "${order.status}" to "${newStatus}"`,
+        400
+      );
     }
 
     // If changing to cancelled, restore stock

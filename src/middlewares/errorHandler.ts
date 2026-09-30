@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { logger } from '../config/logger.js';
 import { AppError } from '../utils/AppError.js';
+import { env } from '../config/env.js';
 
 interface MongoCastError extends Error {
   name: 'CastError';
@@ -94,9 +95,9 @@ export const globalErrorHandler = (
   err.statusCode = err.statusCode || 500;
   err.status = err.status || 'error';
 
-  if (process.env.NODE_ENV === 'development') {
+  if (env.NODE_ENV === 'development') {
     sendErrorDev(err, res);
-  } else if (process.env.NODE_ENV === 'production') {
+  } else if (env.NODE_ENV === 'production') {
     let error: AppErrorLike = { ...err, message: err.message, name: err.name };
 
     if (error.name === 'CastError') error = handleCastErrorDB(error);

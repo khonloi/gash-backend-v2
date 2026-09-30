@@ -8,6 +8,7 @@ import compression from 'compression';
 import hpp from 'hpp';
 import { globalErrorHandler } from './middlewares/errorHandler.js';
 import { AppError } from './utils/AppError.js';
+import { env } from './config/env.js';
 import { healthCheck } from './controllers/healthController.js';
 import productRouter from './routes/productRoutes.js';
 import authRouter from './routes/authRoutes.js';
@@ -21,7 +22,7 @@ const app: Application = express();
 app.use(helmet());
 
 // Development logging
-if (process.env.NODE_ENV === 'development') {
+if (env.NODE_ENV === 'development') {
   app.use(morgan('dev'));
 }
 
@@ -30,7 +31,7 @@ const limiter = rateLimit({
   max: 1000,
   windowMs: 60 * 60 * 1000, // 1 hour
   message: 'Too many requests from this IP, please try again in an hour!',
-  skip: () => process.env.NODE_ENV === 'test',
+  skip: () => env.NODE_ENV === 'test',
 });
 app.use('/api', limiter);
 
@@ -40,7 +41,7 @@ const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
   message:
     'Too many login or registration attempts from this IP, please try again in 15 minutes!',
-  skip: () => process.env.NODE_ENV === 'test',
+  skip: () => env.NODE_ENV === 'test',
 });
 app.use('/api/v1/auth/login', authLimiter);
 app.use('/api/v1/auth/register', authLimiter);
@@ -75,7 +76,7 @@ app.use(compression());
 
 // Implement CORS
 const allowedOrigins = [
-  process.env.FRONTEND_URL,
+  env.FRONTEND_URL,
   'http://localhost:3000',
   'http://127.0.0.1:3000',
 ].filter(Boolean) as string[];
@@ -86,7 +87,7 @@ app.use(
       if (
         !origin ||
         allowedOrigins.includes(origin) ||
-        process.env.NODE_ENV !== 'production'
+        env.NODE_ENV !== 'production'
       ) {
         callback(null, true);
       } else {

@@ -2,6 +2,11 @@ import mongoose, { Schema, Model } from 'mongoose';
 import bcrypt from 'bcryptjs';
 import { IUser, IAddress, IRefreshToken } from '../types/index.js';
 import { createTokenHash, generateRandomToken } from '../utils/crypto.js';
+import {
+  PASSWORD_RESET_EXPIRES_MS,
+  EMAIL_VERIFICATION_EXPIRES_MS,
+} from '../config/constants.js';
+import { env } from '../config/env.js';
 
 const addressSchema = new Schema<IAddress>(
   {
@@ -173,8 +178,7 @@ userSchema.index({ emailVerificationToken: 1 }, { sparse: true });
 userSchema.pre('save', async function () {
   if (!this.isModified('password') || !this.password) return;
 
-  const cost = parseInt(process.env.BCRYPT_COST || '12', 10);
-  this.password = await bcrypt.hash(this.password, cost);
+  this.password = await bcrypt.hash(this.password, env.BCRYPT_COST);
 
   // Set passwordChangedAt if modifying an existing user's password
   if (!this.isNew) {
@@ -207,7 +211,7 @@ userSchema.methods.changedPasswordAfter = function (
 userSchema.methods.createPasswordResetToken = function (): string {
   const resetToken = generateRandomToken();
   this.passwordResetToken = createTokenHash(resetToken);
-  this.passwordResetExpires = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+  this.passwordResetExpires = new Date(Date.now() + PASSWORD_RESET_EXPIRES_MS);
 
   return resetToken;
 };
@@ -216,7 +220,9 @@ userSchema.methods.createPasswordResetToken = function (): string {
 userSchema.methods.createEmailVerificationToken = function (): string {
   const verificationToken = generateRandomToken();
   this.emailVerificationToken = createTokenHash(verificationToken);
-  this.emailVerificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+  this.emailVerificationExpires = new Date(
+    Date.now() + EMAIL_VERIFICATION_EXPIRES_MS
+  );
 
   return verificationToken;
 };

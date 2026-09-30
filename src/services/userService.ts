@@ -17,6 +17,7 @@ import {
 } from '../validations/userValidation.js';
 import { ChangePasswordInput } from '../validations/authValidation.js';
 import { AuthResponse, toSafeUser } from './authService.js';
+import { REFRESH_TOKEN_EXPIRES_MS } from '../config/constants.js';
 
 export class UserService {
   /**
@@ -76,7 +77,7 @@ export class UserService {
     const accessToken = signAccessToken(user._id.toString(), user.role);
     const refreshToken = signRefreshToken(user._id.toString());
 
-    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    const expiresAt = new Date(Date.now() + REFRESH_TOKEN_EXPIRES_MS);
     user.refreshTokens.push({
       token: refreshToken,
       expiresAt,

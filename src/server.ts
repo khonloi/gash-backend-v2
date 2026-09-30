@@ -1,6 +1,4 @@
-import dotenv from 'dotenv';
-dotenv.config();
-
+import { env } from './config/env.js';
 import app from './app.js';
 import { connectDB } from './config/db.js';
 import { logger } from './config/logger.js';
@@ -12,7 +10,7 @@ process.on('uncaughtException', (err: Error) => {
 });
 
 // Connect to database
-if (process.env.MONGO_URI) {
+if (env.MONGO_URI) {
   connectDB();
 } else {
   logger.warn(
@@ -20,10 +18,8 @@ if (process.env.MONGO_URI) {
   );
 }
 
-const PORT = process.env.PORT || 5000;
-
-const server = app.listen(PORT, () => {
-  logger.info(`Server running in ${process.env.NODE_ENV} mode on port ${PORT}`);
+const server = app.listen(env.PORT, () => {
+  logger.info(`Server running in ${env.NODE_ENV} mode on port ${env.PORT}`);
 });
 
 process.on('unhandledRejection', (reason: unknown) => {

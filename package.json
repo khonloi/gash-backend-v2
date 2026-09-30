@@ -5,6 +5,7 @@
   "main": "dist/server.js",
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
     "start": "node dist/server.js",
     "dev": "tsx watch src/server.ts",
     "lint": "eslint .",

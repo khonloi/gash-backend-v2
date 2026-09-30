@@ -1,5 +1,4 @@
 import { User } from '../models/User.js';
-import { IUser } from '../types/index.js';
 import { AppError } from '../utils/AppError.js';
 import { createTokenHash } from '../utils/crypto.js';
 import {
@@ -14,26 +13,24 @@ import {
   ResetPasswordInput,
 } from '../validations/authValidation.js';
 
+import {
+  REFRESH_TOKEN_EXPIRES_MS,
+  MAX_ACTIVE_REFRESH_TOKENS,
+} from '../config/constants.js';
+import { toSafeUser, type ISafeUser } from '../utils/sanitize.js';
+
+export { toSafeUser };
+export type { ISafeUser };
+
 export interface AuthTokens {
   accessToken: string;
   refreshToken: string;
 }
 
 export interface AuthResponse {
-  user: Partial<IUser>;
+  user: ISafeUser;
   tokens: AuthTokens;
 }
-
-export const toSafeUser = (user: IUser): Partial<IUser> => {
-  const obj: Partial<IUser> & Record<string, unknown> = user.toObject();
-  delete obj.password;
-  delete obj.refreshTokens;
-  delete obj.emailVerificationToken;
-  delete obj.emailVerificationExpires;
-  delete obj.passwordResetToken;
-  delete obj.passwordResetExpires;
-  return obj;
-};
 
 export class AuthService {
   /**
@@ -57,8 +54,8 @@ export class AuthService {
     const accessToken = signAccessToken(user._id.toString(), user.role);
     const refreshToken = signRefreshToken(user._id.toString());
 
-    // Store refresh token (valid for 7 days)
-    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    // Store refresh token
+    const expiresAt = new Date(Date.now() + REFRESH_TOKEN_EXPIRES_MS);
     user.refreshTokens = [
       { token: refreshToken, expiresAt, createdAt: new Date() },
     ];
@@ -97,9 +94,9 @@ export class AuthService {
     const accessToken = signAccessToken(user._id.toString(), user.role);
     const refreshToken = signRefreshToken(user._id.toString());
 
-    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    const expiresAt = new Date(Date.now() + REFRESH_TOKEN_EXPIRES_MS);
 
-    // Clean up expired tokens and append new one (max 10 active refresh tokens)
+    // Clean up expired tokens and append new one (capped at MAX_ACTIVE_REFRESH_TOKENS)
     const activeTokens = (user.refreshTokens || []).filter(
       (rt) => rt.expiresAt > new Date()
     );
@@ -108,7 +105,7 @@ export class AuthService {
       expiresAt,
       createdAt: new Date(),
     });
-    if (activeTokens.length > 10) {
+    if (activeTokens.length > MAX_ACTIVE_REFRESH_TOKENS) {
       activeTokens.shift();
     }
     user.refreshTokens = activeTokens;
@@ -173,7 +170,7 @@ export class AuthService {
     const newAccessToken = signAccessToken(user._id.toString(), user.role);
     const newRefreshToken = signRefreshToken(user._id.toString());
 
-    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    const expiresAt = new Date(Date.now() + REFRESH_TOKEN_EXPIRES_MS);
     user.refreshTokens.push({
       token: newRefreshToken,
       expiresAt,
@@ -254,7 +251,7 @@ export class AuthService {
     const accessToken = signAccessToken(user._id.toString(), user.role);
     const refreshToken = signRefreshToken(user._id.toString());
 
-    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    const expiresAt = new Date(Date.now() + REFRESH_TOKEN_EXPIRES_MS);
     user.refreshTokens.push({
       token: refreshToken,
       expiresAt,
