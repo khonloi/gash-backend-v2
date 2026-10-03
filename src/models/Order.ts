@@ -144,7 +144,7 @@ const orderSchema = new Schema<IOrder>(
     paymentMethod: {
       type: String,
       enum: {
-        values: ['cod', 'credit_card', 'momo', 'vnpay'],
+        values: ['cod', 'credit_card', 'apple_pay', 'paypal', 'momo', 'vnpay'],
         message: '{VALUE} is not a valid payment method',
       },
       required: [true, 'Payment method is required'],

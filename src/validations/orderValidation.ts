@@ -40,7 +40,9 @@ const orderItemInputSchema = z.object({
 export const createOrderSchema = z.object({
   shippingAddress: shippingAddressSchema,
   shippingMethod: z.enum(['standard', 'express']).default('standard'),
-  paymentMethod: z.enum(['cod', 'credit_card', 'momo', 'vnpay']).default('cod'),
+  paymentMethod: z
+    .enum(['cod', 'credit_card', 'apple_pay', 'paypal', 'momo', 'vnpay'])
+    .default('cod'),
   contactEmail: z
     .string()
     .email('Please provide a valid email')
