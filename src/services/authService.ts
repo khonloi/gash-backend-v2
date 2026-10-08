@@ -1,4 +1,5 @@
 import { User } from '../models/User.js';
+import { IUser } from '../types/index.js';
 import { AppError } from '../utils/AppError.js';
 import { createTokenHash } from '../utils/crypto.js';
 import {
@@ -32,6 +33,44 @@ export interface AuthResponse {
   tokens: AuthTokens;
 }
 
+/**
+ * Issues fresh JWT access & refresh tokens, saves them on the user, and returns AuthResponse.
+ */
+export async function issueTokensAndSave(
+  user: IUser,
+  resetExisting = false
+): Promise<AuthResponse> {
+  const accessToken = signAccessToken(user._id.toString(), user.role);
+  const refreshToken = signRefreshToken(user._id.toString());
+  const expiresAt = new Date(Date.now() + REFRESH_TOKEN_EXPIRES_MS);
+
+  const newToken = {
+    token: createTokenHash(refreshToken),
+    expiresAt,
+    createdAt: new Date(),
+  };
+
+  if (resetExisting) {
+    user.refreshTokens = [newToken];
+  } else {
+    const activeTokens = (user.refreshTokens || []).filter(
+      (rt) => rt.expiresAt > new Date()
+    );
+    activeTokens.push(newToken);
+    if (activeTokens.length > MAX_ACTIVE_REFRESH_TOKENS) {
+      activeTokens.shift();
+    }
+    user.refreshTokens = activeTokens;
+  }
+
+  await user.save();
+
+  return {
+    user: toSafeUser(user),
+    tokens: { accessToken, refreshToken },
+  };
+}
+
 export class AuthService {
   /**
    * Register a new user account
@@ -51,29 +90,11 @@ export class AuthService {
 
     const verificationToken = user.createEmailVerificationToken();
 
-    const accessToken = signAccessToken(user._id.toString(), user.role);
-    const refreshToken = signRefreshToken(user._id.toString());
-
-    // Store refresh token
-    const expiresAt = new Date(Date.now() + REFRESH_TOKEN_EXPIRES_MS);
-    user.refreshTokens = [
-      {
-        token: createTokenHash(refreshToken),
-        expiresAt,
-        createdAt: new Date(),
-      },
-    ];
-
-    await user.save();
-
     logger.info(
       `[DEV ONLY] Email verification token for ${user.email}: ${verificationToken}`
     );
 
-    return {
-      user: toSafeUser(user),
-      tokens: { accessToken, refreshToken },
-    };
+    return issueTokensAndSave(user, true);
   }
 
   /**
@@ -95,31 +116,7 @@ export class AuthService {
       );
     }
 
-    const accessToken = signAccessToken(user._id.toString(), user.role);
-    const refreshToken = signRefreshToken(user._id.toString());
-
-    const expiresAt = new Date(Date.now() + REFRESH_TOKEN_EXPIRES_MS);
-
-    // Clean up expired tokens and append new one (capped at MAX_ACTIVE_REFRESH_TOKENS)
-    const activeTokens = (user.refreshTokens || []).filter(
-      (rt) => rt.expiresAt > new Date()
-    );
-    activeTokens.push({
-      token: createTokenHash(refreshToken),
-      expiresAt,
-      createdAt: new Date(),
-    });
-    if (activeTokens.length > MAX_ACTIVE_REFRESH_TOKENS) {
-      activeTokens.shift();
-    }
-    user.refreshTokens = activeTokens;
-
-    await user.save();
-
-    return {
-      user: toSafeUser(user),
-      tokens: { accessToken, refreshToken },
-    };
+    return issueTokensAndSave(user, false);
   }
 
   /**
@@ -251,25 +248,7 @@ export class AuthService {
     user.passwordResetToken = undefined;
     user.passwordResetExpires = undefined;
 
-    // Invalidate all existing refresh tokens
-    user.refreshTokens = [];
-
-    const accessToken = signAccessToken(user._id.toString(), user.role);
-    const refreshToken = signRefreshToken(user._id.toString());
-
-    const expiresAt = new Date(Date.now() + REFRESH_TOKEN_EXPIRES_MS);
-    user.refreshTokens.push({
-      token: createTokenHash(refreshToken),
-      expiresAt,
-      createdAt: new Date(),
-    });
-
-    await user.save();
-
-    return {
-      user: toSafeUser(user),
-      tokens: { accessToken, refreshToken },
-    };
+    return issueTokensAndSave(user, true);
   }
 
   /**

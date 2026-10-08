@@ -6,7 +6,7 @@ import { slugify } from '../src/utils/slugify.js';
 import { createTokenHash, generateRandomToken } from '../src/utils/crypto.js';
 import { AppError } from '../src/utils/AppError.js';
 import { APIFeatures } from '../src/utils/apiFeatures.js';
-import { sendSuccess } from '../src/utils/response.js';
+import { sendPaginated, sendSuccess } from '../src/utils/response.js';
 import { IUser } from '../src/types/index.js';
 
 describe('Utility Unit Tests', () => {
@@ -406,6 +406,48 @@ describe('Utility Unit Tests', () => {
         },
         message: 'Created successfully',
         data: { items: [1, 2, 3] },
+      });
+    });
+  });
+
+  describe('sendPaginated response envelope', () => {
+    it('should format standard paginated response with data key and metadata', () => {
+      let sentStatus = 0;
+      let sentJson: unknown = null;
+      const res = {
+        status(code: number) {
+          sentStatus = code;
+          return this;
+        },
+        json(body: unknown) {
+          sentJson = body;
+          return this;
+        },
+      } as unknown as Parameters<typeof sendPaginated>[0];
+
+      const paginatedResult = {
+        data: [{ id: '1' }, { id: '2' }],
+        page: 2,
+        limit: 10,
+        totalPages: 5,
+        totalResults: 50,
+      };
+
+      sendPaginated(res, 'products', paginatedResult);
+
+      expect(sentStatus).toBe(200);
+      expect(sentJson).toEqual({
+        status: 'success',
+        results: 2,
+        pagination: {
+          page: 2,
+          limit: 10,
+          totalPages: 5,
+          totalResults: 50,
+        },
+        data: {
+          products: [{ id: '1' }, { id: '2' }],
+        },
       });
     });
   });

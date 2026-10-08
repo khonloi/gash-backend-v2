@@ -1,5 +1,5 @@
 import { Query } from 'mongoose';
-import { QueryString } from '../types/index.js';
+import { PaginatedResult, QueryString } from '../types/index.js';
 
 export class APIFeatures<T> {
   public mongooseQuery: Query<T[], T>;
@@ -124,4 +124,49 @@ export class APIFeatures<T> {
 
     return this;
   }
+}
+
+export interface PaginateOptions {
+  search?: boolean;
+  populate?: string | { path: string; select?: string };
+}
+
+/**
+ * Executes a standard filtered, optionally searched, sorted, and paginated query.
+ */
+export async function paginateQuery<T>(
+  createQuery: () => Query<T[], T>,
+  queryString: QueryString,
+  options: PaginateOptions = { search: true }
+): Promise<PaginatedResult<T>> {
+  const countFeatures = new APIFeatures(createQuery(), queryString).filter();
+  if (options.search) {
+    countFeatures.search();
+  }
+  const totalResults = await countFeatures.mongooseQuery.countDocuments();
+
+  let dataQuery = createQuery();
+  if (options.populate) {
+    if (typeof options.populate === 'string') {
+      dataQuery = dataQuery.populate(options.populate);
+    } else {
+      dataQuery = dataQuery.populate(
+        options.populate.path,
+        options.populate.select
+      );
+    }
+  }
+
+  const features = new APIFeatures(dataQuery, queryString).filter();
+  if (options.search) {
+    features.search();
+  }
+  features.sort().limitFields().paginate(totalResults);
+
+  const data = await features.mongooseQuery;
+
+  return {
+    data,
+    ...features.pagination,
+  };
 }

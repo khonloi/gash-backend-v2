@@ -34,12 +34,14 @@ export interface AppErrorLike extends Partial<Error> {
   errors?: Record<string, MongoValidationErrorItem>;
 }
 
-const handleCastErrorDB = (err: MongoCastError | AppErrorLike): AppError => {
+export const handleCastErrorDB = (
+  err: MongoCastError | AppErrorLike
+): AppError => {
   const message = `Invalid ${String(err.path)}: ${String(err.value)}.`;
   return new AppError(message, 400);
 };
 
-const handleDuplicateFieldsDB = (
+export const handleDuplicateFieldsDB = (
   err: MongoDuplicateKeyError | AppErrorLike
 ): AppError => {
   const match = err.errmsg?.match(/(["'])(\\?.)*?\1/);
@@ -48,7 +50,7 @@ const handleDuplicateFieldsDB = (
   return new AppError(message, 400);
 };
 
-const handleValidationErrorDB = (
+export const handleValidationErrorDB = (
   err: MongoValidationError | AppErrorLike
 ): AppError => {
   const errors = Object.values(err.errors || {}).map((el) => el.message);
@@ -56,13 +58,13 @@ const handleValidationErrorDB = (
   return new AppError(message, 400);
 };
 
-const handleJWTError = (): AppError =>
+export const handleJWTError = (): AppError =>
   new AppError('Invalid token. Please log in again.', 401);
 
-const handleJWTExpiredError = (): AppError =>
+export const handleJWTExpiredError = (): AppError =>
   new AppError('Your token has expired. Please log in again.', 401);
 
-const sendErrorDev = (err: AppErrorLike, res: Response): void => {
+export const sendErrorDev = (err: AppErrorLike, res: Response): void => {
   res.status(err.statusCode || 500).json({
     status: err.status || 'error',
     error: err,
@@ -71,7 +73,7 @@ const sendErrorDev = (err: AppErrorLike, res: Response): void => {
   });
 };
 
-const sendErrorProd = (err: AppErrorLike, res: Response): void => {
+export const sendErrorProd = (err: AppErrorLike, res: Response): void => {
   if (err.isOperational) {
     res.status(err.statusCode || 500).json({
       status: err.status || 'error',
@@ -95,9 +97,7 @@ export const globalErrorHandler = (
   err.statusCode = err.statusCode || 500;
   err.status = err.status || 'error';
 
-  if (env.NODE_ENV === 'development') {
-    sendErrorDev(err, res);
-  } else if (env.NODE_ENV === 'production') {
+  if (env.NODE_ENV === 'production') {
     let error: AppErrorLike = { ...err, message: err.message, name: err.name };
 
     if (error.name === 'CastError') error = handleCastErrorDB(error);

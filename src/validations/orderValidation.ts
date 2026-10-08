@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { cartItemBaseSchema } from './cartValidation.js';
 
 const shippingAddressSchema = z.object({
   fullName: z
@@ -27,15 +28,7 @@ const shippingAddressSchema = z.object({
   country: z.string().trim().default('Vietnam'),
 });
 
-const orderItemInputSchema = z.object({
-  productId: z.string().min(1, 'Product ID is required'),
-  quantity: z
-    .number()
-    .int('Quantity must be an integer')
-    .min(1, 'Quantity must be at least 1'),
-  size: z.string().trim().optional(),
-  color: z.string().trim().optional(),
-});
+const orderItemInputSchema = cartItemBaseSchema;
 
 export const createOrderSchema = z.object({
   shippingAddress: shippingAddressSchema,

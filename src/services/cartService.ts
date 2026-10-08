@@ -12,6 +12,26 @@ export const CART_PRODUCT_PROJECTION =
   'name slug price images quantity brand status';
 
 export class CartService {
+  private populateCart(cart: ICart): Promise<ICart> {
+    return cart.populate('items.product', CART_PRODUCT_PROJECTION);
+  }
+
+  private async findCartWithValidItem(
+    userId: string,
+    itemId: string
+  ): Promise<ICart> {
+    if (!mongoose.Types.ObjectId.isValid(itemId)) {
+      throw new AppError(`Invalid item ID format: "${itemId}"`, 400);
+    }
+
+    const cart = await Cart.findOne({ user: userId });
+    if (!cart) {
+      throw new AppError('Cart not found', 404);
+    }
+
+    return cart;
+  }
+
   async getCart(userId: string): Promise<ICart> {
     let cart = await Cart.findOne({ user: userId }).populate(
       'items.product',
@@ -78,7 +98,7 @@ export class CartService {
     }
 
     await cart.save();
-    return cart.populate('items.product', CART_PRODUCT_PROJECTION);
+    return this.populateCart(cart);
   }
 
   async updateItemQty(
@@ -86,14 +106,7 @@ export class CartService {
     itemId: string,
     quantity: number
   ): Promise<ICart> {
-    if (!mongoose.Types.ObjectId.isValid(itemId)) {
-      throw new AppError(`Invalid item ID format: "${itemId}"`, 400);
-    }
-
-    const cart = await Cart.findOne({ user: userId });
-    if (!cart) {
-      throw new AppError('Cart not found', 404);
-    }
+    const cart = await this.findCartWithValidItem(userId, itemId);
 
     const item = cart.items.find((i) => i._id?.toString() === itemId);
     if (!item) {
@@ -115,23 +128,16 @@ export class CartService {
     item.quantity = quantity;
     await cart.save();
 
-    return cart.populate('items.product', CART_PRODUCT_PROJECTION);
+    return this.populateCart(cart);
   }
 
   async removeItem(userId: string, itemId: string): Promise<ICart> {
-    if (!mongoose.Types.ObjectId.isValid(itemId)) {
-      throw new AppError(`Invalid item ID format: "${itemId}"`, 400);
-    }
-
-    const cart = await Cart.findOne({ user: userId });
-    if (!cart) {
-      throw new AppError('Cart not found', 404);
-    }
+    const cart = await this.findCartWithValidItem(userId, itemId);
 
     cart.items = cart.items.filter((i) => i._id?.toString() !== itemId);
     await cart.save();
 
-    return cart.populate('items.product', CART_PRODUCT_PROJECTION);
+    return this.populateCart(cart);
   }
 
   async clearCart(userId: string): Promise<void> {
@@ -190,7 +196,7 @@ export class CartService {
     }
 
     await cart.save();
-    return cart.populate('items.product', CART_PRODUCT_PROJECTION);
+    return this.populateCart(cart);
   }
 }
 

@@ -7,7 +7,7 @@ import {
   QueryString,
 } from '../types/index.js';
 import { AppError } from '../utils/AppError.js';
-import { APIFeatures } from '../utils/apiFeatures.js';
+import { paginateQuery } from '../utils/apiFeatures.js';
 import { slugify } from '../utils/slugify.js';
 import {
   CreateProductInput,
@@ -43,26 +43,7 @@ export class ProductService {
   async getAllProducts(
     queryString: QueryString
   ): Promise<PaginatedResult<IProduct>> {
-    // 1) Count total documents matching filters
-    const countFeatures = new APIFeatures(Product.find(), queryString)
-      .filter()
-      .search();
-    const totalResults = await countFeatures.mongooseQuery.countDocuments();
-
-    // 2) Execute query with sorting, pagination, and projection
-    const features = new APIFeatures(Product.find(), queryString)
-      .filter()
-      .search()
-      .sort()
-      .limitFields()
-      .paginate(totalResults);
-
-    const data = await features.mongooseQuery;
-
-    return {
-      data,
-      ...features.pagination,
-    };
+    return paginateQuery(() => Product.find(), queryString, { search: true });
   }
 
   /**

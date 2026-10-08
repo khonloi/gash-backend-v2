@@ -14,59 +14,57 @@ declare global {
   }
 }
 
+export function extractBearerToken(req: Request): string | undefined {
+  if (
+    req.headers.authorization &&
+    req.headers.authorization.startsWith('Bearer ')
+  ) {
+    return req.headers.authorization.split(' ')[1];
+  }
+  return undefined;
+}
+
+export async function verifyUserFromToken(token: string): Promise<IUser> {
+  const decoded = verifyToken(token);
+  const currentUser = await User.findById(decoded.id);
+
+  if (!currentUser) {
+    throw new AppError(
+      'The user belonging to this token no longer exists.',
+      401
+    );
+  }
+
+  if (!currentUser.isActive) {
+    throw new AppError(
+      'This account has been deactivated. Please contact support.',
+      401
+    );
+  }
+
+  if (decoded.iat && currentUser.changedPasswordAfter(decoded.iat)) {
+    throw new AppError(
+      'User recently changed password! Please log in again.',
+      401
+    );
+  }
+
+  return currentUser;
+}
+
 /**
  * Protect routes: Authenticate user via Bearer JWT access token
  */
 export const protect: RequestHandler = catchAsync(
   async (req: Request, _res: Response, next: NextFunction): Promise<void> => {
-    // 1) Getting token and check if it exists
-    let token: string | undefined;
-
-    if (
-      req.headers.authorization &&
-      req.headers.authorization.startsWith('Bearer ')
-    ) {
-      token = req.headers.authorization.split(' ')[1];
-    }
-
+    const token = extractBearerToken(req);
     if (!token) {
       return next(
         new AppError('You are not logged in! Please log in to get access.', 401)
       );
     }
 
-    // 2) Verification token
-    const decoded = verifyToken(token);
-
-    // 3) Check if user still exists and is active
-    const currentUser = await User.findById(decoded.id);
-    if (!currentUser) {
-      return next(
-        new AppError('The user belonging to this token no longer exists.', 401)
-      );
-    }
-
-    if (!currentUser.isActive) {
-      return next(
-        new AppError(
-          'This account has been deactivated. Please contact support.',
-          401
-        )
-      );
-    }
-
-    // 4) Check if user changed password after the token was issued
-    if (decoded.iat && currentUser.changedPasswordAfter(decoded.iat)) {
-      return next(
-        new AppError(
-          'User recently changed password! Please log in again.',
-          401
-        )
-      );
-    }
-
-    // Grant access to protected route
-    req.user = currentUser;
+    req.user = await verifyUserFromToken(token);
     next();
   }
 );
@@ -76,30 +74,13 @@ export const protect: RequestHandler = catchAsync(
  */
 export const optionalAuth: RequestHandler = catchAsync(
   async (req: Request, _res: Response, next: NextFunction): Promise<void> => {
-    let token: string | undefined;
-
-    if (
-      req.headers.authorization &&
-      req.headers.authorization.startsWith('Bearer ')
-    ) {
-      token = req.headers.authorization.split(' ')[1];
-    }
-
+    const token = extractBearerToken(req);
     if (!token) {
       return next();
     }
 
     try {
-      const decoded = verifyToken(token);
-      const currentUser = await User.findById(decoded.id);
-
-      if (
-        currentUser &&
-        currentUser.isActive &&
-        !(decoded.iat && currentUser.changedPasswordAfter(decoded.iat))
-      ) {
-        req.user = currentUser;
-      }
+      req.user = await verifyUserFromToken(token);
     } catch {
       // Ignore token verification errors for optional auth
     }

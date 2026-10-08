@@ -8,17 +8,14 @@ import {
   UserRole,
 } from '../types/index.js';
 import { AppError } from '../utils/AppError.js';
-import { createTokenHash } from '../utils/crypto.js';
-import { APIFeatures } from '../utils/apiFeatures.js';
-import { signAccessToken, signRefreshToken } from '../utils/jwt.js';
+import { paginateQuery } from '../utils/apiFeatures.js';
 import {
   UpdateMeInput,
   AddressInput,
   UpdateAddressInput,
 } from '../validations/userValidation.js';
 import { ChangePasswordInput } from '../validations/authValidation.js';
-import { AuthResponse, toSafeUser } from './authService.js';
-import { REFRESH_TOKEN_EXPIRES_MS } from '../config/constants.js';
+import { AuthResponse, issueTokensAndSave } from './authService.js';
 
 export class UserService {
   /**
@@ -73,24 +70,7 @@ export class UserService {
     }
 
     user.password = data.newPassword;
-    user.refreshTokens = []; // Log out other sessions
-
-    const accessToken = signAccessToken(user._id.toString(), user.role);
-    const refreshToken = signRefreshToken(user._id.toString());
-
-    const expiresAt = new Date(Date.now() + REFRESH_TOKEN_EXPIRES_MS);
-    user.refreshTokens.push({
-      token: createTokenHash(refreshToken),
-      expiresAt,
-      createdAt: new Date(),
-    });
-
-    await user.save();
-
-    return {
-      user: toSafeUser(user),
-      tokens: { accessToken, refreshToken },
-    };
+    return issueTokensAndSave(user, true);
   }
 
   /**
@@ -212,24 +192,7 @@ export class UserService {
    * Admin: Get all users with search, filtering, and pagination
    */
   async getAllUsers(queryString: QueryString): Promise<PaginatedResult<IUser>> {
-    const countFeatures = new APIFeatures(User.find(), queryString)
-      .filter()
-      .search();
-    const totalResults = await countFeatures.mongooseQuery.countDocuments();
-
-    const features = new APIFeatures(User.find(), queryString)
-      .filter()
-      .search()
-      .sort()
-      .limitFields()
-      .paginate(totalResults);
-
-    const data = await features.mongooseQuery;
-
-    return {
-      data,
-      ...features.pagination,
-    };
+    return paginateQuery(() => User.find(), queryString, { search: true });
   }
 
   /**

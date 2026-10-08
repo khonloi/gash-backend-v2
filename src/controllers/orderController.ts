@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { catchAsync } from '../utils/catchAsync.js';
 import { orderService } from '../services/orderService.js';
+import { sendPaginated, sendSuccess } from '../utils/response.js';
 
 export const createOrder = catchAsync(
   async (req: Request, res: Response): Promise<void> => {
@@ -9,10 +10,7 @@ export const createOrder = catchAsync(
       req.body
     );
 
-    res.status(201).json({
-      status: 'success',
-      data: { order },
-    });
+    sendSuccess(res, { order }, 201);
   }
 );
 
@@ -23,17 +21,7 @@ export const getMyOrders = catchAsync(
       req.query
     );
 
-    res.status(200).json({
-      status: 'success',
-      results: result.data.length,
-      pagination: {
-        page: result.page,
-        limit: result.limit,
-        totalPages: result.totalPages,
-        totalResults: result.totalResults,
-      },
-      data: { orders: result.data },
-    });
+    sendPaginated(res, 'orders', result);
   }
 );
 
@@ -45,10 +33,7 @@ export const getOrder = catchAsync(
       req.user!.role
     );
 
-    res.status(200).json({
-      status: 'success',
-      data: { order },
-    });
+    sendSuccess(res, { order });
   }
 );
 
@@ -61,10 +46,7 @@ export const cancelOrder = catchAsync(
       req.body.reason
     );
 
-    res.status(200).json({
-      status: 'success',
-      data: { order },
-    });
+    sendSuccess(res, { order });
   }
 );
 
@@ -72,17 +54,7 @@ export const getAllOrders = catchAsync(
   async (req: Request, res: Response): Promise<void> => {
     const result = await orderService.getAllOrders(req.query);
 
-    res.status(200).json({
-      status: 'success',
-      results: result.data.length,
-      pagination: {
-        page: result.page,
-        limit: result.limit,
-        totalPages: result.totalPages,
-        totalResults: result.totalResults,
-      },
-      data: { orders: result.data },
-    });
+    sendPaginated(res, 'orders', result);
   }
 );
 
@@ -93,10 +65,7 @@ export const updateOrderStatus = catchAsync(
       req.body.status
     );
 
-    res.status(200).json({
-      status: 'success',
-      data: { order },
-    });
+    sendSuccess(res, { order });
   }
 );
 
@@ -107,9 +76,6 @@ export const updatePaymentStatus = catchAsync(
       req.body.paymentStatus
     );
 
-    res.status(200).json({
-      status: 'success',
-      data: { order },
-    });
+    sendSuccess(res, { order });
   }
 );

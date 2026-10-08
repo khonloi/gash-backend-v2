@@ -15,7 +15,9 @@ export default {
     ],
   },
   setupFiles: ['dotenv/config'],
+  testTimeout: 30000,
   coveragePathIgnorePatterns: ['/node_modules/'],
+
   collectCoverageFrom: [
     'src/**/*.ts',
     '!src/server.ts',

@@ -11,8 +11,9 @@ import {
   QueryString,
 } from '../types/index.js';
 import { AppError } from '../utils/AppError.js';
-import { APIFeatures } from '../utils/apiFeatures.js';
+import { paginateQuery } from '../utils/apiFeatures.js';
 import { resolveOwnerId } from '../utils/resolveOwnerId.js';
+
 import { CreateOrderInput } from '../validations/orderValidation.js';
 import {
   SHIPPING_FEES,
@@ -179,6 +180,31 @@ export class OrderService {
   }
 
   /**
+   * Helper to find an order by ObjectId or orderNumber identifier
+   */
+  private async findOrderByIdentifier(
+    orderId: string,
+    populateUser = false
+  ): Promise<IOrder> {
+    const isObjectId = mongoose.Types.ObjectId.isValid(orderId);
+    const query = isObjectId
+      ? { _id: orderId }
+      : { orderNumber: orderId.toUpperCase() };
+
+    let queryExec = Order.findOne(query);
+    if (populateUser) {
+      queryExec = queryExec.populate('user', 'firstName lastName email phone');
+    }
+
+    const order = await queryExec;
+    if (!order) {
+      throw new AppError(`Order not found with identifier "${orderId}"`, 404);
+    }
+
+    return order;
+  }
+
+  /**
    * Get an order by ID or orderNumber
    */
   async getOrderById(
@@ -186,19 +212,7 @@ export class OrderService {
     userId: string,
     userRole: string = 'customer'
   ): Promise<IOrder> {
-    const isObjectId = mongoose.Types.ObjectId.isValid(orderId);
-    const query = isObjectId
-      ? { _id: orderId }
-      : { orderNumber: orderId.toUpperCase() };
-
-    const order = await Order.findOne(query).populate(
-      'user',
-      'firstName lastName email phone'
-    );
-
-    if (!order) {
-      throw new AppError(`Order not found with identifier "${orderId}"`, 404);
-    }
+    const order = await this.findOrderByIdentifier(orderId, true);
 
     // Check ownership unless admin
     const ownerId = resolveOwnerId(order.user);
@@ -226,26 +240,9 @@ export class OrderService {
       baseFilter.status = String(queryString.status) as OrderStatus;
     }
 
-    // 1) Count total documents
-    const countFeatures = new APIFeatures(
-      Order.find(baseFilter),
-      queryString
-    ).filter();
-    const totalResults = await countFeatures.mongooseQuery.countDocuments();
-
-    // 2) Query with sorting and pagination
-    const features = new APIFeatures(Order.find(baseFilter), queryString)
-      .filter()
-      .sort()
-      .limitFields()
-      .paginate(totalResults);
-
-    const data = await features.mongooseQuery;
-
-    return {
-      data,
-      ...features.pagination,
-    };
+    return paginateQuery(() => Order.find(baseFilter), queryString, {
+      search: false,
+    });
   }
 
   /**
@@ -254,27 +251,10 @@ export class OrderService {
   async getAllOrders(
     queryString: QueryString
   ): Promise<PaginatedResult<IOrder>> {
-    const countFeatures = new APIFeatures(Order.find(), queryString)
-      .filter()
-      .search();
-    const totalResults = await countFeatures.mongooseQuery.countDocuments();
-
-    const features = new APIFeatures(
-      Order.find().populate('user', 'firstName lastName email phone'),
-      queryString
-    )
-      .filter()
-      .search()
-      .sort()
-      .limitFields()
-      .paginate(totalResults);
-
-    const data = await features.mongooseQuery;
-
-    return {
-      data,
-      ...features.pagination,
-    };
+    return paginateQuery(() => Order.find(), queryString, {
+      search: true,
+      populate: { path: 'user', select: 'firstName lastName email phone' },
+    });
   }
 
   /**
@@ -286,16 +266,7 @@ export class OrderService {
     userRole: string = 'customer',
     reason?: string
   ): Promise<IOrder> {
-    const isObjectId = mongoose.Types.ObjectId.isValid(orderId);
-    const query = isObjectId
-      ? { _id: orderId }
-      : { orderNumber: orderId.toUpperCase() };
-
-    const order = await Order.findOne(query);
-
-    if (!order) {
-      throw new AppError(`Order not found with identifier "${orderId}"`, 404);
-    }
+    const order = await this.findOrderByIdentifier(orderId);
 
     const ownerId = resolveOwnerId(order.user);
 
@@ -355,16 +326,7 @@ export class OrderService {
     orderId: string,
     newStatus: OrderStatus
   ): Promise<IOrder> {
-    const isObjectId = mongoose.Types.ObjectId.isValid(orderId);
-    const query = isObjectId
-      ? { _id: orderId }
-      : { orderNumber: orderId.toUpperCase() };
-
-    const order = await Order.findOne(query);
-
-    if (!order) {
-      throw new AppError(`Order not found with identifier "${orderId}"`, 404);
-    }
+    const order = await this.findOrderByIdentifier(orderId);
 
     if (order.status === newStatus) {
       return order;
@@ -412,16 +374,7 @@ export class OrderService {
     orderId: string,
     paymentStatus: PaymentStatus
   ): Promise<IOrder> {
-    const isObjectId = mongoose.Types.ObjectId.isValid(orderId);
-    const query = isObjectId
-      ? { _id: orderId }
-      : { orderNumber: orderId.toUpperCase() };
-
-    const order = await Order.findOne(query);
-
-    if (!order) {
-      throw new AppError(`Order not found with identifier "${orderId}"`, 404);
-    }
+    const order = await this.findOrderByIdentifier(orderId);
 
     order.paymentStatus = paymentStatus;
     if (paymentStatus === 'paid' && order.status === 'pending') {

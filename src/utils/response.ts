@@ -1,4 +1,5 @@
 import { Response } from 'express';
+import { PaginatedResult } from '../types/index.js';
 
 export interface ResponseMeta {
   results?: number;
@@ -41,4 +42,29 @@ export function sendSuccess<T>(
     data,
   };
   return res.status(statusCode).json(body);
+}
+
+/**
+ * Sends a standardized JSON paginated success response.
+ *
+ * @param res - Express response object
+ * @param dataKey - Field name under data object containing the list (e.g. 'orders', 'products', 'users')
+ * @param result - Paginated result containing data array and pagination metadata
+ * @param statusCode - HTTP status code (defaults to 200)
+ */
+export function sendPaginated<T>(
+  res: Response,
+  dataKey: string,
+  result: PaginatedResult<T>,
+  statusCode = 200
+): Response {
+  return sendSuccess(res, { [dataKey]: result.data }, statusCode, {
+    results: result.data.length,
+    pagination: {
+      page: result.page,
+      limit: result.limit,
+      totalPages: result.totalPages,
+      totalResults: result.totalResults,
+    },
+  });
 }

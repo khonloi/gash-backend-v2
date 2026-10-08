@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { paginationQuerySchema } from './commonValidation.js';
 
 export const updateMeSchema = z.object({
   firstName: z
@@ -53,11 +54,7 @@ export const updateUserRoleSchema = z.object({
   }),
 });
 
-export const userQuerySchema = z.object({
-  page: z.coerce.number().int().min(1).default(1),
-  limit: z.coerce.number().int().min(1).max(100).default(10),
-  sort: z.string().optional(),
-  fields: z.string().optional(),
+export const userQuerySchema = paginationQuerySchema.extend({
   search: z.string().optional(),
   role: z.enum(['customer', 'seller', 'admin']).optional(),
   isActive: z.coerce.boolean().optional(),

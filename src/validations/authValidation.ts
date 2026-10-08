@@ -11,6 +11,11 @@ const passwordValidation = z
     'Password must contain at least one uppercase letter, one lowercase letter, one number, and one special character (@$!%*?&)'
   );
 
+const passwordConfirmationFields = {
+  password: passwordValidation,
+  passwordConfirm: z.string({ message: 'Please confirm your password' }),
+};
+
 export const registerSchema = z
   .object({
     firstName: z
@@ -28,8 +33,7 @@ export const registerSchema = z
       .trim()
       .email('Please provide a valid email address')
       .toLowerCase(),
-    password: passwordValidation,
-    passwordConfirm: z.string({ message: 'Please confirm your password' }),
+    ...passwordConfirmationFields,
   })
   .refine((data) => data.password === data.passwordConfirm, {
     message: 'Passwords do not match',
@@ -62,10 +66,7 @@ export const forgotPasswordSchema = z.object({
 });
 
 export const resetPasswordSchema = z
-  .object({
-    password: passwordValidation,
-    passwordConfirm: z.string({ message: 'Please confirm your password' }),
-  })
+  .object(passwordConfirmationFields)
   .refine((data) => data.password === data.passwordConfirm, {
     message: 'Passwords do not match',
     path: ['passwordConfirm'],

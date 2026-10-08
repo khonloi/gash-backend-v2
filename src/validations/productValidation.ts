@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { paginationQuerySchema } from './commonValidation.js';
 
 const productImageSchema = z.object({
   url: z.string().min(1, 'Image URL cannot be empty'),
@@ -83,11 +84,7 @@ export const updateStockSchema = z.object({
   operation: z.enum(['increment', 'decrement', 'set']).default('set'),
 });
 
-export const productQuerySchema = z.object({
-  page: z.coerce.number().int().min(1).default(1),
-  limit: z.coerce.number().int().min(1).max(100).default(10),
-  sort: z.string().optional(),
-  fields: z.string().optional(),
+export const productQuerySchema = paginationQuerySchema.extend({
   keyword: z.string().optional(),
   category: z.string().optional(),
   subcategory: z.string().optional(),
