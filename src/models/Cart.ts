@@ -1,5 +1,6 @@
 import mongoose, { Schema, Model } from 'mongoose';
 import { ICart, ICartItem } from '../types/index.js';
+import { commonItemVariantFields } from './commonSchema.js';
 
 const cartItemSchema = new Schema<ICartItem>(
   {
@@ -8,19 +9,7 @@ const cartItemSchema = new Schema<ICartItem>(
       ref: 'Product',
       required: [true, 'Product reference is required'],
     },
-    quantity: {
-      type: Number,
-      required: [true, 'Quantity is required'],
-      min: [1, 'Quantity must be at least 1'],
-    },
-    size: {
-      type: String,
-      trim: true,
-    },
-    color: {
-      type: String,
-      trim: true,
-    },
+    ...commonItemVariantFields,
     priceAtAdd: {
       type: Number,
       required: [true, 'Price at time of adding is required'],

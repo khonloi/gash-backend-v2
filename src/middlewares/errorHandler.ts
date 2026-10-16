@@ -89,16 +89,23 @@ export const sendErrorProd = (err: AppErrorLike, res: Response): void => {
 };
 
 export const globalErrorHandler = (
-  err: AppErrorLike,
+  err: AppErrorLike | unknown,
   _req: Request,
   res: Response,
   _next: NextFunction
 ): void => {
-  err.statusCode = err.statusCode || 500;
-  err.status = err.status || 'error';
+  const errorObj = (
+    typeof err === 'object' && err !== null ? err : {}
+  ) as AppErrorLike;
+  errorObj.statusCode = errorObj.statusCode || 500;
+  errorObj.status = errorObj.status || 'error';
 
   if (env.NODE_ENV === 'production') {
-    let error: AppErrorLike = { ...err, message: err.message, name: err.name };
+    let error: AppErrorLike = {
+      ...errorObj,
+      name: errorObj.name,
+      message: errorObj.message,
+    };
 
     if (error.name === 'CastError') error = handleCastErrorDB(error);
     if (error.code === 11000) error = handleDuplicateFieldsDB(error);
@@ -109,6 +116,6 @@ export const globalErrorHandler = (
 
     sendErrorProd(error, res);
   } else {
-    sendErrorDev(err, res);
+    sendErrorDev(errorObj, res);
   }
 };

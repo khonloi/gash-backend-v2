@@ -18,6 +18,7 @@ import {
   updateStockSchema,
   productQuerySchema,
 } from '../validations/productValidation.js';
+import { idParamSchema } from '../validations/commonValidation.js';
 
 const router: Router = Router();
 
@@ -40,14 +41,20 @@ router
 // Single item routes
 router
   .route('/:id')
-  .get(getProduct)
+  .get(validate(idParamSchema, 'params'), getProduct)
   .patch(
     protect,
     restrictTo('admin', 'seller'),
+    validate(idParamSchema, 'params'),
     validate(updateProductSchema, 'body'),
     updateProduct
   )
-  .delete(protect, restrictTo('admin'), deleteProduct);
+  .delete(
+    protect,
+    restrictTo('admin'),
+    validate(idParamSchema, 'params'),
+    deleteProduct
+  );
 
 // Dedicated stock adjustment
 router
@@ -55,6 +62,7 @@ router
   .patch(
     protect,
     restrictTo('admin', 'seller'),
+    validate(idParamSchema, 'params'),
     validate(updateStockSchema, 'body'),
     updateStock
   );

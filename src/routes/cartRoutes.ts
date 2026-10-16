@@ -14,6 +14,7 @@ import {
   updateCartItemSchema,
   mergeCartSchema,
 } from '../validations/cartValidation.js';
+import { itemIdParamSchema } from '../validations/commonValidation.js';
 
 const router: Router = Router();
 
@@ -26,8 +27,12 @@ router.route('/items').post(validate(addToCartSchema, 'body'), addToCart);
 
 router
   .route('/items/:itemId')
-  .patch(validate(updateCartItemSchema, 'body'), updateCartItem)
-  .delete(removeCartItem);
+  .patch(
+    validate(itemIdParamSchema, 'params'),
+    validate(updateCartItemSchema, 'body'),
+    updateCartItem
+  )
+  .delete(validate(itemIdParamSchema, 'params'), removeCartItem);
 
 router.post('/merge', validate(mergeCartSchema, 'body'), mergeCart);
 

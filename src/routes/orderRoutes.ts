@@ -16,6 +16,7 @@ import {
   updatePaymentStatusSchema,
   cancelOrderSchema,
 } from '../validations/orderValidation.js';
+import { orderIdParamSchema } from '../validations/commonValidation.js';
 
 const router: Router = Router();
 
@@ -29,11 +30,14 @@ router
   .get(protect, restrictTo('admin'), getAllOrders);
 
 // Single order routes
-router.route('/:orderId').get(protect, getOrder);
+router
+  .route('/:orderId')
+  .get(protect, validate(orderIdParamSchema, 'params'), getOrder);
 
 router.patch(
   '/:orderId/cancel',
   protect,
+  validate(orderIdParamSchema, 'params'),
   validate(cancelOrderSchema, 'body'),
   cancelOrder
 );
@@ -43,6 +47,7 @@ router.patch(
   '/:orderId/status',
   protect,
   restrictTo('admin'),
+  validate(orderIdParamSchema, 'params'),
   validate(updateOrderStatusSchema, 'body'),
   updateOrderStatus
 );
@@ -51,6 +56,7 @@ router.patch(
   '/:orderId/payment',
   protect,
   restrictTo('admin'),
+  validate(orderIdParamSchema, 'params'),
   validate(updatePaymentStatusSchema, 'body'),
   updatePaymentStatus
 );

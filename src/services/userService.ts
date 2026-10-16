@@ -1,4 +1,3 @@
-import mongoose from 'mongoose';
 import { User } from '../models/User.js';
 import {
   IAddress,
@@ -16,6 +15,7 @@ import {
 } from '../validations/userValidation.js';
 import { ChangePasswordInput } from '../validations/authValidation.js';
 import { AuthResponse, issueTokensAndSave } from './authService.js';
+import { assertObjectId } from '../utils/objectId.js';
 
 export class UserService {
   /**
@@ -199,9 +199,7 @@ export class UserService {
    * Admin: Get a user by ID
    */
   async getUserById(id: string): Promise<IUser> {
-    if (!mongoose.Types.ObjectId.isValid(id)) {
-      throw new AppError(`Invalid user ID format: "${id}"`, 400);
-    }
+    assertObjectId(id, 'user ID');
 
     const user = await User.findById(id);
     if (!user) {
@@ -215,9 +213,7 @@ export class UserService {
    * Admin: Update user role
    */
   async updateUserRole(id: string, role: UserRole): Promise<IUser> {
-    if (!mongoose.Types.ObjectId.isValid(id)) {
-      throw new AppError(`Invalid user ID format: "${id}"`, 400);
-    }
+    assertObjectId(id, 'user ID');
 
     const user = await User.findByIdAndUpdate(
       id,
@@ -236,9 +232,7 @@ export class UserService {
    * Admin: Permanently delete a user
    */
   async deleteUser(id: string): Promise<void> {
-    if (!mongoose.Types.ObjectId.isValid(id)) {
-      throw new AppError(`Invalid user ID format: "${id}"`, 400);
-    }
+    assertObjectId(id, 'user ID');
 
     const user = await User.findByIdAndDelete(id);
     if (!user) {

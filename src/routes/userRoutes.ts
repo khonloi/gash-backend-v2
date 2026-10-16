@@ -23,6 +23,10 @@ import {
   userQuerySchema,
 } from '../validations/userValidation.js';
 import { changePasswordSchema } from '../validations/authValidation.js';
+import {
+  idParamSchema,
+  addressIdParamSchema,
+} from '../validations/commonValidation.js';
 
 const router: Router = Router();
 
@@ -47,16 +51,24 @@ router
 
 router
   .route('/me/addresses/:addressId')
-  .patch(validate(updateAddressSchema, 'body'), updateAddress)
-  .delete(removeAddress);
+  .patch(
+    validate(addressIdParamSchema, 'params'),
+    validate(updateAddressSchema, 'body'),
+    updateAddress
+  )
+  .delete(validate(addressIdParamSchema, 'params'), removeAddress);
 
 // Admin-only user management routes
 router.use(restrictTo('admin'));
 
 router.get('/', validate(userQuerySchema, 'query'), getAllUsers);
-router.route('/:id').get(getUser).delete(deleteUser);
+router
+  .route('/:id')
+  .get(validate(idParamSchema, 'params'), getUser)
+  .delete(validate(idParamSchema, 'params'), deleteUser);
 router.patch(
   '/:id/role',
+  validate(idParamSchema, 'params'),
   validate(updateUserRoleSchema, 'body'),
   updateUserRole
 );

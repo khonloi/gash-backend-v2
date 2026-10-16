@@ -1,4 +1,3 @@
-import mongoose from 'mongoose';
 import { Cart } from '../models/Cart.js';
 import { Product } from '../models/Product.js';
 import { ICart, ICartItem } from '../types/index.js';
@@ -7,9 +6,38 @@ import {
   AddToCartInput,
   MergeCartInput,
 } from '../validations/cartValidation.js';
+import { assertObjectId, isValidObjectId } from '../utils/objectId.js';
 
 export const CART_PRODUCT_PROJECTION =
   'name slug price images quantity brand status';
+
+/**
+ * Checks whether a cart item matches the target product ID, size, and color.
+ */
+export function isSameCartItem(
+  item: ICartItem,
+  match: { productId: string; size?: string; color?: string }
+): boolean {
+  return (
+    item.product.toString() === match.productId &&
+    item.size === match.size &&
+    item.color === match.color
+  );
+}
+
+/**
+ * Finds the index of a matching item in the cart.
+ */
+export function findCartItemIndex(
+  items: ICartItem[],
+  productId: string,
+  size?: string,
+  color?: string
+): number {
+  return items.findIndex((item) =>
+    isSameCartItem(item, { productId, size, color })
+  );
+}
 
 export class CartService {
   private populateCart(cart: ICart): Promise<ICart> {
@@ -20,9 +48,7 @@ export class CartService {
     userId: string,
     itemId: string
   ): Promise<ICart> {
-    if (!mongoose.Types.ObjectId.isValid(itemId)) {
-      throw new AppError(`Invalid item ID format: "${itemId}"`, 400);
-    }
+    assertObjectId(itemId, 'item ID');
 
     const cart = await Cart.findOne({ user: userId });
     if (!cart) {
@@ -46,9 +72,7 @@ export class CartService {
   async addItem(userId: string, itemData: AddToCartInput): Promise<ICart> {
     const { productId, quantity, size, color } = itemData;
 
-    if (!mongoose.Types.ObjectId.isValid(productId)) {
-      throw new AppError(`Invalid product ID format: "${productId}"`, 400);
-    }
+    assertObjectId(productId, 'product ID');
 
     const product = await Product.findById(productId);
     if (!product) {
@@ -71,11 +95,11 @@ export class CartService {
       cart = await Cart.create({ user: userId, items: [] });
     }
 
-    const existingItemIndex = cart.items.findIndex(
-      (item) =>
-        item.product.toString() === productId &&
-        item.size === size &&
-        item.color === color
+    const existingItemIndex = findCartItemIndex(
+      cart.items,
+      productId,
+      size,
+      color
     );
 
     if (existingItemIndex > -1) {
@@ -159,16 +183,16 @@ export class CartService {
 
     for (const localItem of localCartData.items) {
       const { productId, quantity, size, color } = localItem;
-      if (!mongoose.Types.ObjectId.isValid(productId)) continue;
+      if (!isValidObjectId(productId)) continue;
 
       const product = await Product.findById(productId);
       if (!product || product.status !== 'active') continue;
 
-      const existingItemIndex = cart.items.findIndex(
-        (item) =>
-          item.product.toString() === productId &&
-          item.size === size &&
-          item.color === color
+      const existingItemIndex = findCartItemIndex(
+        cart.items,
+        productId,
+        size,
+        color
       );
 
       let newQuantity = quantity;

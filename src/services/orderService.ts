@@ -1,10 +1,8 @@
 import mongoose from 'mongoose';
 import { Order } from '../models/Order.js';
-import { Product } from '../models/Product.js';
 import { Cart } from '../models/Cart.js';
 import {
   IOrder,
-  IOrderItem,
   OrderStatus,
   PaymentStatus,
   PaginatedResult,
@@ -13,12 +11,14 @@ import {
 import { AppError } from '../utils/AppError.js';
 import { paginateQuery } from '../utils/apiFeatures.js';
 import { resolveOwnerId } from '../utils/resolveOwnerId.js';
-
+import { assertObjectId } from '../utils/objectId.js';
 import { CreateOrderInput } from '../validations/orderValidation.js';
+import { SHIPPING_FEES } from '../config/constants.js';
+import { inventoryService, ProcessOrderItemInput } from './inventoryService.js';
 import {
-  SHIPPING_FEES,
-  VALID_ORDER_STATUS_TRANSITIONS,
-} from '../config/constants.js';
+  canCustomerCancelOrder,
+  validateOrderStatusTransition,
+} from './orderStateMachine.js';
 
 export class OrderService {
   /**
@@ -28,18 +28,11 @@ export class OrderService {
     userId: string | undefined,
     data: CreateOrderInput
   ): Promise<IOrder> {
-    if (userId && !mongoose.Types.ObjectId.isValid(userId)) {
-      throw new AppError(`Invalid user ID format: "${userId}"`, 400);
+    if (userId) {
+      assertObjectId(userId, 'user ID');
     }
 
-    interface ItemToProcess {
-      productId: string;
-      quantity: number;
-      size?: string;
-      color?: string;
-    }
-
-    let itemsToProcess: ItemToProcess[] = [];
+    let itemsToProcess: ProcessOrderItemInput[] = [];
 
     // 1) Determine items to process: from input or from user's active cart
     if (data.items && data.items.length > 0) {
@@ -64,84 +57,8 @@ export class OrderService {
       throw new AppError('Order must contain at least one item', 400);
     }
 
-    // 2) Validate stock and deduct inventory with rollback tracking
-    const orderItems: IOrderItem[] = [];
-    const decremented: Array<{
-      productId: mongoose.Types.ObjectId;
-      quantity: number;
-    }> = [];
-
-    try {
-      for (const item of itemsToProcess) {
-        if (!mongoose.Types.ObjectId.isValid(item.productId)) {
-          throw new AppError(
-            `Invalid product ID format: "${item.productId}"`,
-            400
-          );
-        }
-
-        // Atomically check active status and available stock while decrementing
-        const product = await Product.findOneAndUpdate(
-          {
-            _id: item.productId,
-            status: 'active',
-            quantity: { $gte: item.quantity },
-          },
-          { $inc: { quantity: -item.quantity } },
-          { returnDocument: 'after' }
-        );
-
-        if (!product) {
-          // Check if product exists to provide a helpful error message
-          const existing = await Product.findById(item.productId);
-          if (!existing) {
-            throw new AppError(
-              `Product with ID "${item.productId}" was not found`,
-              404
-            );
-          }
-          if (existing.status !== 'active') {
-            throw new AppError(
-              `Product "${existing.name}" is currently not available for purchase`,
-              400
-            );
-          }
-          throw new AppError(
-            `Insufficient stock for "${existing.name}". Only ${existing.quantity} remaining.`,
-            400
-          );
-        }
-
-        decremented.push({
-          productId: product._id as mongoose.Types.ObjectId,
-          quantity: item.quantity,
-        });
-
-        const primaryImg =
-          product.images?.find((img) => img.isPrimary)?.url ||
-          product.images?.[0]?.url ||
-          '';
-
-        orderItems.push({
-          product: product._id as mongoose.Types.ObjectId,
-          name: product.name,
-          sku: product.sku,
-          price: product.price,
-          quantity: item.quantity,
-          size: item.size,
-          color: item.color,
-          imageUrl: primaryImg,
-        });
-      }
-    } catch (error) {
-      // Rollback any successfully decremented products on failure
-      for (const dec of decremented) {
-        await Product.findByIdAndUpdate(dec.productId, {
-          $inc: { quantity: dec.quantity },
-        });
-      }
-      throw error;
-    }
+    // 2) Validate stock and deduct inventory with automated rollback tracking via InventoryService
+    const orderItems = await inventoryService.processOrderItems(itemsToProcess);
 
     // 3) Calculate totals
     const subtotal = orderItems.reduce(
@@ -231,9 +148,7 @@ export class OrderService {
     userId: string,
     queryString: QueryString
   ): Promise<PaginatedResult<IOrder>> {
-    if (!mongoose.Types.ObjectId.isValid(userId)) {
-      throw new AppError(`Invalid user ID format: "${userId}"`, 400);
-    }
+    assertObjectId(userId, 'user ID');
 
     const baseFilter: Record<string, unknown> = { user: userId };
     if (queryString.status) {
@@ -286,22 +201,15 @@ export class OrderService {
     }
 
     // Customers can only cancel when order is pending or confirmed
-    if (
-      userRole !== 'admin' &&
-      !['pending', 'confirmed'].includes(order.status)
-    ) {
+    if (userRole !== 'admin' && !canCustomerCancelOrder(order.status)) {
       throw new AppError(
         `Orders in "${order.status}" status cannot be cancelled by customer`,
         400
       );
     }
 
-    // Restore product quantities
-    for (const item of order.items) {
-      await Product.findByIdAndUpdate(item.product, {
-        $inc: { quantity: item.quantity },
-      });
-    }
+    // Restore product quantities via InventoryService
+    await inventoryService.restoreInventory(order.items);
 
     order.status = 'cancelled';
     order.cancelledAt = new Date();
@@ -332,22 +240,11 @@ export class OrderService {
       return order;
     }
 
-    const allowedTransitions =
-      VALID_ORDER_STATUS_TRANSITIONS[order.status] || [];
-    if (!allowedTransitions.includes(newStatus)) {
-      throw new AppError(
-        `Cannot transition order status from "${order.status}" to "${newStatus}"`,
-        400
-      );
-    }
+    validateOrderStatusTransition(order.status, newStatus);
 
     // If changing to cancelled, restore stock
     if (newStatus === 'cancelled' && order.status !== 'cancelled') {
-      for (const item of order.items) {
-        await Product.findByIdAndUpdate(item.product, {
-          $inc: { quantity: item.quantity },
-        });
-      }
+      await inventoryService.restoreInventory(order.items);
       order.cancelledAt = new Date();
       order.cancelReason = 'Cancelled by administrator';
     }

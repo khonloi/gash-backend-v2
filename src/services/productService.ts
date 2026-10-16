@@ -1,4 +1,3 @@
-import mongoose from 'mongoose';
 import { Product } from '../models/Product.js';
 import {
   IProduct,
@@ -13,6 +12,7 @@ import {
   CreateProductInput,
   UpdateProductInput,
 } from '../validations/productValidation.js';
+import { assertObjectId } from '../utils/objectId.js';
 
 export class ProductService {
   /**
@@ -50,9 +50,7 @@ export class ProductService {
    * Get product by ID
    */
   async getProductById(id: string): Promise<IProduct> {
-    if (!mongoose.Types.ObjectId.isValid(id)) {
-      throw new AppError(`Invalid product ID format: "${id}"`, 400);
-    }
+    assertObjectId(id, 'product ID');
 
     const product = await Product.findById(id);
     if (!product) {
@@ -81,9 +79,7 @@ export class ProductService {
     id: string,
     updateData: UpdateProductInput
   ): Promise<IProduct> {
-    if (!mongoose.Types.ObjectId.isValid(id)) {
-      throw new AppError(`Invalid product ID format: "${id}"`, 400);
-    }
+    assertObjectId(id, 'product ID');
 
     // Check SKU collision if SKU is being updated
     if (updateData.sku) {
@@ -123,9 +119,7 @@ export class ProductService {
    * Hard delete product by ID
    */
   async deleteProduct(id: string): Promise<void> {
-    if (!mongoose.Types.ObjectId.isValid(id)) {
-      throw new AppError(`Invalid product ID format: "${id}"`, 400);
-    }
+    assertObjectId(id, 'product ID');
 
     const product = await Product.findByIdAndDelete(id);
     if (!product) {
@@ -141,9 +135,7 @@ export class ProductService {
     quantity: number,
     operation: 'increment' | 'decrement' | 'set' = 'set'
   ): Promise<IProduct> {
-    if (!mongoose.Types.ObjectId.isValid(id)) {
-      throw new AppError(`Invalid product ID format: "${id}"`, 400);
-    }
+    assertObjectId(id, 'product ID');
 
     if (operation === 'set') {
       if (quantity < 0) {

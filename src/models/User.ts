@@ -7,59 +7,17 @@ import {
   EMAIL_VERIFICATION_EXPIRES_MS,
 } from '../config/constants.js';
 import { env } from '../config/env.js';
+import { createAddressSchemaDefinition } from './commonSchema.js';
 
 const addressSchema = new Schema<IAddress>(
-  {
-    label: {
-      type: String,
-      required: [true, 'Address label is required'],
-      trim: true,
-      default: 'Home',
-    },
-    fullName: {
-      type: String,
-      required: [true, 'Full name for address is required'],
-      trim: true,
-    },
-    addressLine1: {
-      type: String,
-      required: [true, 'Address line 1 is required'],
-      trim: true,
-    },
-    addressLine2: {
-      type: String,
-      trim: true,
-    },
-    city: {
-      type: String,
-      required: [true, 'City is required'],
-      trim: true,
-    },
-    state: {
-      type: String,
-      required: [true, 'State/Province is required'],
-      trim: true,
-    },
-    postalCode: {
-      type: String,
-      required: [true, 'Postal code is required'],
-      trim: true,
-    },
-    country: {
-      type: String,
-      required: [true, 'Country is required'],
-      trim: true,
-      default: 'US',
-    },
-    phone: {
-      type: String,
-      trim: true,
-    },
-    isDefault: {
-      type: Boolean,
-      default: false,
-    },
-  },
+  createAddressSchemaDefinition({
+    defaultCountry: 'US',
+    includeLabel: true,
+    includeIsDefault: true,
+    requireState: true,
+    requirePostalCode: true,
+    fullNameRequiredMessage: 'Full name for address is required',
+  }),
   { _id: true }
 );
 

@@ -1,6 +1,10 @@
 import mongoose, { Schema, Model } from 'mongoose';
 import crypto from 'crypto';
 import { IOrder, IOrderItem, IShippingAddress } from '../types/index.js';
+import {
+  commonItemVariantFields,
+  createAddressSchemaDefinition,
+} from './commonSchema.js';
 
 const orderItemSchema = new Schema<IOrderItem>(
   {
@@ -24,19 +28,7 @@ const orderItemSchema = new Schema<IOrderItem>(
       required: [true, 'Product price snapshot is required'],
       min: [0, 'Price cannot be negative'],
     },
-    quantity: {
-      type: Number,
-      required: [true, 'Quantity is required'],
-      min: [1, 'Quantity must be at least 1'],
-    },
-    size: {
-      type: String,
-      trim: true,
-    },
-    color: {
-      type: String,
-      trim: true,
-    },
+    ...commonItemVariantFields,
     imageUrl: {
       type: String,
       trim: true,
@@ -46,46 +38,12 @@ const orderItemSchema = new Schema<IOrderItem>(
 );
 
 const shippingAddressSchema = new Schema<IShippingAddress>(
-  {
-    fullName: {
-      type: String,
-      required: [true, 'Full name for delivery is required'],
-      trim: true,
-    },
-    phone: {
-      type: String,
-      required: [true, 'Phone number for delivery is required'],
-      trim: true,
-    },
-    addressLine1: {
-      type: String,
-      required: [true, 'Address line 1 is required'],
-      trim: true,
-    },
-    addressLine2: {
-      type: String,
-      trim: true,
-    },
-    city: {
-      type: String,
-      required: [true, 'City is required'],
-      trim: true,
-    },
-    state: {
-      type: String,
-      trim: true,
-    },
-    postalCode: {
-      type: String,
-      trim: true,
-    },
-    country: {
-      type: String,
-      required: [true, 'Country is required'],
-      trim: true,
-      default: 'Vietnam',
-    },
-  },
+  createAddressSchemaDefinition({
+    defaultCountry: 'Vietnam',
+    requirePhone: true,
+    phoneRequiredMessage: 'Phone number for delivery is required',
+    fullNameRequiredMessage: 'Full name for delivery is required',
+  }),
   { _id: false }
 );
 
