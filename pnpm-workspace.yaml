@@ -3,3 +3,9 @@ allowBuilds:
   esbuild: true
   mongodb-memory-server: true
   unrs-resolver: true
+
+overrides:
+  ip-address: '>=10.7.1'
+  proxy-addr: '>=2.0.8'
+
+

@@ -8,6 +8,13 @@ import { AppError } from '../src/utils/AppError.js';
 import { APIFeatures } from '../src/utils/apiFeatures.js';
 import { sendPaginated, sendSuccess } from '../src/utils/response.js';
 import { IUser } from '../src/types/index.js';
+import {
+  signAccessToken,
+  signRefreshToken,
+  verifyToken,
+} from '../src/utils/jwt.js';
+import jwt from 'jsonwebtoken';
+import { env } from '../src/config/env.js';
 
 describe('Utility Unit Tests', () => {
   describe('toSafeUser', () => {
@@ -323,6 +330,44 @@ describe('Utility Unit Tests', () => {
       expect(mockQueryDefault.select.calls[0][0]).toBe('-__v');
     });
 
+    it('should strip fields starting with + to prevent selecting hidden fields', () => {
+      const mockQuery = createMockQuery();
+      new APIFeatures(mockQuery as unknown as Query<unknown[], unknown>, {
+        fields: '+password,+refreshTokens,name,price',
+      }).limitFields();
+
+      expect(mockQuery.select.calls[0][0]).toBe('name price');
+    });
+
+    it('should preserve string values containing words like in, gt, or ne', () => {
+      const mockQuery = createMockQuery();
+      const queryString = {
+        name: 'Running in the rain',
+        tag: 'original line',
+        price: { gte: 100 },
+      };
+
+      new APIFeatures(
+        mockQuery as unknown as Query<unknown[], unknown>,
+        queryString
+      ).filter();
+
+      expect(mockQuery.find.calls[0][0]).toEqual({
+        name: 'Running in the rain',
+        tag: 'original line',
+        price: { $gte: 100 },
+      });
+    });
+
+    it('should sanitize sort fields and ignore invalid characters', () => {
+      const mockQuery = createMockQuery();
+      new APIFeatures(mockQuery as unknown as Query<unknown[], unknown>, {
+        sort: 'price,-createdAt,invalid$field;drop,name',
+      }).sort();
+
+      expect(mockQuery.sort.calls[0][0]).toBe('price -createdAt name');
+    });
+
     it('should paginate results and compute correct pagination metadata', () => {
       const mockQuery = createMockQuery();
       const features = new APIFeatures(
@@ -449,6 +494,64 @@ describe('Utility Unit Tests', () => {
           products: [{ id: '1' }, { id: '2' }],
         },
       });
+    });
+  });
+
+  describe('JWT Utilities', () => {
+    it('should sign access token with type access and customer default role', () => {
+      const token = signAccessToken('user123');
+      const decoded = verifyToken(token);
+
+      expect(decoded.id).toBe('user123');
+      expect(decoded.role).toBe('customer');
+      expect(decoded.type).toBe('access');
+      expect(decoded.iat).toBeDefined();
+      expect(decoded.exp).toBeDefined();
+    });
+
+    it('should sign access token with custom role', () => {
+      const token = signAccessToken('admin123', 'admin');
+      const decoded = verifyToken(token);
+
+      expect(decoded.id).toBe('admin123');
+      expect(decoded.role).toBe('admin');
+      expect(decoded.type).toBe('access');
+    });
+
+    it('should sign refresh token with type refresh and unique jti', () => {
+      const token1 = signRefreshToken('user123');
+      const token2 = signRefreshToken('user123');
+      const decoded1 = verifyToken(token1);
+      const decoded2 = verifyToken(token2);
+
+      expect(decoded1.id).toBe('user123');
+      expect(decoded1.type).toBe('refresh');
+      expect(decoded1.jti).toBeDefined();
+      expect(decoded2.jti).toBeDefined();
+      expect(decoded1.jti).not.toBe(decoded2.jti);
+    });
+
+    it('should throw 401 when token has expired', () => {
+      const expiredToken = jwt.sign(
+        { id: 'user123', type: 'access' },
+        env.JWT_SECRET,
+        { expiresIn: '-1s', algorithm: 'HS256' }
+      );
+
+      expect(() => verifyToken(expiredToken)).toThrow(
+        'Your token has expired. Please log in again.'
+      );
+    });
+
+    it('should throw 401 on malformed or invalid token signature', () => {
+      expect(() => verifyToken('not-a-valid-token')).toThrow(
+        'Invalid token. Please log in again.'
+      );
+
+      const tamperedToken = signAccessToken('user123') + 'tampered';
+      expect(() => verifyToken(tamperedToken)).toThrow(
+        'Invalid token. Please log in again.'
+      );
     });
   });
 });

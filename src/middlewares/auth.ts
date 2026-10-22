@@ -26,6 +26,11 @@ export function extractBearerToken(req: Request): string | undefined {
 
 export async function verifyUserFromToken(token: string): Promise<IUser> {
   const decoded = verifyToken(token);
+
+  if (decoded.type !== 'access') {
+    throw new AppError('Invalid token type. An access token is required.', 401);
+  }
+
   const currentUser = await User.findById(decoded.id);
 
   if (!currentUser) {

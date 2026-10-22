@@ -20,6 +20,9 @@ import orderRouter from './routes/orderRoutes.js';
 
 const app: Application = express();
 
+// Trust first proxy (e.g. reverse proxy, load balancer, Vercel)
+app.set('trust proxy', 1);
+
 // Assign correlation ID to all requests
 app.use(requestId);
 
@@ -33,8 +36,9 @@ const configuredOrigins = env.ALLOWED_ORIGINS
 const allowedOrigins = Array.from(
   new Set([
     env.FRONTEND_URL,
-    'http://localhost:3000',
-    'http://127.0.0.1:3000',
+    ...(env.NODE_ENV !== 'production'
+      ? ['http://localhost:3000', 'http://127.0.0.1:3000']
+      : []),
     ...configuredOrigins,
   ])
 ).filter(Boolean);
@@ -87,6 +91,36 @@ const authLimiter = rateLimit({
 });
 app.use('/api/v1/auth/login', authLimiter);
 app.use('/api/v1/auth/register', authLimiter);
+
+// Specific rate limiting for password reset requests
+const passwordResetLimiter = rateLimit({
+  max: 5,
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  message:
+    'Too many password reset attempts from this IP, please try again in 15 minutes!',
+  skip: () => env.NODE_ENV === 'test',
+});
+app.use('/api/v1/auth/forgot-password', passwordResetLimiter);
+app.use('/api/v1/auth/reset-password', passwordResetLimiter);
+
+// Rate limiting for token refresh
+const refreshLimiter = rateLimit({
+  max: 60,
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  message:
+    'Too many token refresh attempts from this IP, please try again later!',
+  skip: () => env.NODE_ENV === 'test',
+});
+app.use('/api/v1/auth/refresh-token', refreshLimiter);
+
+// Rate limiting for order creation
+const orderCreateLimiter = rateLimit({
+  max: 30,
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  message: 'Too many orders created from this IP, please try again later!',
+  skip: () => env.NODE_ENV === 'test',
+});
+app.post('/api/v1/orders', orderCreateLimiter);
 
 // Body parser, reading data from body into req.body
 app.use(express.json({ limit: '10kb' }));

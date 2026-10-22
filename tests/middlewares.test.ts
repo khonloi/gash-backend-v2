@@ -3,7 +3,7 @@ import mongoose from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { User } from '../src/models/User.js';
 import { AppError } from '../src/utils/AppError.js';
-import { signAccessToken } from '../src/utils/jwt.js';
+import { signAccessToken, signRefreshToken } from '../src/utils/jwt.js';
 import { env } from '../src/config/env.js';
 import {
   extractBearerToken,
@@ -85,6 +85,21 @@ describe('Middleware Unit & Integration Tests', () => {
     });
 
     describe('verifyUserFromToken', () => {
+      it('should throw 401 if a refresh token is supplied instead of an access token', async () => {
+        const user = await User.create({
+          firstName: 'Refresh',
+          lastName: 'Tester',
+          email: 'refreshtest@example.com',
+          password: 'Password123!',
+        });
+
+        const refreshToken = signRefreshToken(user._id.toString());
+
+        await expect(verifyUserFromToken(refreshToken)).rejects.toThrow(
+          'Invalid token type. An access token is required.'
+        );
+      });
+
       it('should throw 401 if user belonging to token does not exist', async () => {
         const nonExistentId = new mongoose.Types.ObjectId().toString();
         const token = signAccessToken(nonExistentId, 'customer');

@@ -8,6 +8,7 @@ import {
   verifyToken,
 } from '../utils/jwt.js';
 import { logger } from '../config/logger.js';
+import { env } from '../config/env.js';
 import {
   RegisterInput,
   LoginInput,
@@ -90,9 +91,11 @@ export class AuthService {
 
     const verificationToken = user.createEmailVerificationToken();
 
-    logger.info(
-      `[DEV ONLY] Email verification token for ${user.email}: ${verificationToken}`
-    );
+    if (env.NODE_ENV !== 'production') {
+      logger.info(
+        `[DEV ONLY] Email verification token for ${user.email}: ${verificationToken}`
+      );
+    }
 
     return issueTokensAndSave(user, true);
   }
@@ -221,9 +224,11 @@ export class AuthService {
     const resetToken = user.createPasswordResetToken();
     await user.save();
 
-    logger.info(
-      `[DEV ONLY] Password reset token for ${user.email}: ${resetToken}`
-    );
+    if (env.NODE_ENV !== 'production') {
+      logger.info(
+        `[DEV ONLY] Password reset token for ${user.email}: ${resetToken}`
+      );
+    }
   }
 
   /**

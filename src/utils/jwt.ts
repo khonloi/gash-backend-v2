@@ -15,6 +15,7 @@ export const signAccessToken = (
 
   return jwt.sign({ id: userId, role, type: 'access' }, env.JWT_SECRET, {
     expiresIn,
+    algorithm: 'HS256',
   });
 };
 
@@ -29,6 +30,7 @@ export const signRefreshToken = (userId: string): string => {
     env.JWT_SECRET,
     {
       expiresIn,
+      algorithm: 'HS256',
     }
   );
 };
@@ -38,7 +40,9 @@ export const signRefreshToken = (userId: string): string => {
  */
 export const verifyToken = (token: string): TokenPayload => {
   try {
-    return jwt.verify(token, env.JWT_SECRET) as TokenPayload;
+    return jwt.verify(token, env.JWT_SECRET, {
+      algorithms: ['HS256'],
+    }) as TokenPayload;
   } catch (error: unknown) {
     if (error instanceof Error && error.name === 'TokenExpiredError') {
       throw new AppError('Your token has expired. Please log in again.', 401);

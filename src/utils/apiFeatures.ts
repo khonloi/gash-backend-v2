@@ -45,19 +45,47 @@ export class APIFeatures<T> {
         priceFilter.lte = Number(this.queryString.maxPrice);
       }
       queryObj.price = {
-        ...(typeof queryObj.price === 'object' ? queryObj.price : {}),
+        ...(typeof queryObj.price === 'object' && queryObj.price !== null
+          ? (queryObj.price as Record<string, unknown>)
+          : {}),
         ...priceFilter,
       };
     }
 
-    // Advanced filtering: replace gte, gt, lte, lt, in, ne with $gte, $gt, etc.
-    let queryStr = JSON.stringify(queryObj);
-    queryStr = queryStr.replace(
-      /\b(gte|gt|lte|lt|in|ne)\b/g,
-      (match) => `$${match}`
-    );
+    // Safely transform comparison operators only on object keys without global regex string replacement
+    const validOperators = new Set(['gte', 'gt', 'lte', 'lt', 'in', 'ne']);
+    const formattedQuery: Record<string, unknown> = {};
 
-    this.mongooseQuery = this.mongooseQuery.find(JSON.parse(queryStr));
+    for (const [key, value] of Object.entries(queryObj)) {
+      if (
+        value !== null &&
+        typeof value === 'object' &&
+        !Array.isArray(value)
+      ) {
+        const opObj: Record<string, unknown> = {};
+        for (const [opKey, opVal] of Object.entries(
+          value as Record<string, unknown>
+        )) {
+          if (validOperators.has(opKey)) {
+            opObj[`$${opKey}`] = opVal;
+          } else if (
+            opKey.startsWith('$') &&
+            validOperators.has(opKey.slice(1))
+          ) {
+            opObj[opKey] = opVal;
+          } else {
+            opObj[opKey] = opVal;
+          }
+        }
+        formattedQuery[key] = opObj;
+      } else {
+        formattedQuery[key] = value;
+      }
+    }
+
+    this.mongooseQuery = this.mongooseQuery.find(
+      formattedQuery as unknown as Parameters<Query<T[], T>['find']>[0]
+    );
     return this;
   }
 
@@ -77,12 +105,17 @@ export class APIFeatures<T> {
   }
 
   /**
-   * Sort results by field(s)
+   * Sort results by field(s) safely
    */
   sort(): this {
     if (this.queryString.sort) {
-      const sortBy = String(this.queryString.sort).split(',').join(' ');
-      this.mongooseQuery = this.mongooseQuery.sort(sortBy);
+      const sortBy = String(this.queryString.sort)
+        .split(',')
+        .map((s) => s.trim())
+        .filter((s) => /^-?[a-zA-Z0-9_.]+$/.test(s))
+        .join(' ');
+
+      this.mongooseQuery = this.mongooseQuery.sort(sortBy || '-createdAt');
     } else {
       this.mongooseQuery = this.mongooseQuery.sort('-createdAt');
     }
@@ -90,12 +123,21 @@ export class APIFeatures<T> {
   }
 
   /**
-   * Project specific fields in result
+   * Project specific fields in result (disallows '+' prefix to prevent overriding select: false)
    */
   limitFields(): this {
     if (this.queryString.fields) {
-      const fields = String(this.queryString.fields).split(',').join(' ');
-      this.mongooseQuery = this.mongooseQuery.select(fields);
+      const fields = String(this.queryString.fields)
+        .split(',')
+        .map((f) => f.trim())
+        .filter((f) => f.length > 0 && !f.startsWith('+'))
+        .join(' ');
+
+      if (fields) {
+        this.mongooseQuery = this.mongooseQuery.select(fields);
+      } else {
+        this.mongooseQuery = this.mongooseQuery.select('-__v');
+      }
     } else {
       this.mongooseQuery = this.mongooseQuery.select('-__v');
     }

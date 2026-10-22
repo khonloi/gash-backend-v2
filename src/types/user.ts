@@ -53,6 +53,7 @@ export interface TokenPayload {
   id: string;
   role?: UserRole;
   type?: 'access' | 'refresh';
+  jti?: string;
   iat?: number;
   exp?: number;
 }

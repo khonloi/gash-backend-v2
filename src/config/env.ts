@@ -4,7 +4,7 @@ import { z } from 'zod';
 // Load environment variables from .env
 dotenv.config();
 
-const envSchema = z.object({
+const baseEnvSchema = z.object({
   NODE_ENV: z
     .enum(['development', 'test', 'production'])
     .default('development'),
@@ -22,6 +22,36 @@ const envSchema = z.object({
   BCRYPT_COST: z.coerce.number().min(4).max(16).default(12),
   FRONTEND_URL: z.string().default('http://localhost:3000'),
   ALLOWED_ORIGINS: z.string().optional(),
+});
+
+const envSchema = baseEnvSchema.superRefine((data, ctx) => {
+  if (data.NODE_ENV === 'production') {
+    if (
+      !process.env.JWT_SECRET ||
+      data.JWT_SECRET === 'your_jwt_secret_key_change_in_production' ||
+      data.JWT_SECRET.length < 32
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['JWT_SECRET'],
+        message:
+          'In production, JWT_SECRET must be explicitly set and be at least 32 characters long.',
+      });
+    }
+
+    if (
+      !process.env.MONGO_URI ||
+      data.MONGO_URI.includes('127.0.0.1') ||
+      data.MONGO_URI.includes('localhost')
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['MONGO_URI'],
+        message:
+          'In production, MONGO_URI must be explicitly set to a production database URI.',
+      });
+    }
+  }
 });
 
 const parsed = envSchema.safeParse(process.env);
