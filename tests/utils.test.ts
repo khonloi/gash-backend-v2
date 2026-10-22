@@ -388,6 +388,44 @@ describe('Utility Unit Tests', () => {
         totalResults: 50,
       });
     });
+
+    it('should clamp malicious or negative pagination numbers and limit max results per page to 100', () => {
+      const mockQuery = createMockQuery();
+      const features = new APIFeatures(
+        mockQuery as unknown as Query<unknown[], unknown>,
+        {
+          page: '-5',
+          limit: '99999',
+        }
+      );
+      features.paginate(250);
+
+      // Negative page clamped to 1: skip = (1 - 1) * 100 = 0
+      expect(mockQuery.skip.calls[0][0]).toBe(0);
+      // Limit clamped to 100 max
+      expect(mockQuery.limit.calls[0][0]).toBe(100);
+      expect(features.pagination.page).toBe(1);
+      expect(features.pagination.limit).toBe(100);
+      expect(features.pagination.totalPages).toBe(3);
+    });
+
+    it('should sanitize dangerous sort injection payloads and fallback safely', () => {
+      const mockQuery = createMockQuery();
+      new APIFeatures(mockQuery as unknown as Query<unknown[], unknown>, {
+        sort: "price; DROP TABLE products--, ' OR 1=1--, $where, validField",
+      }).sort();
+
+      // Only 'validField' matches /^-?[a-zA-Z0-9_.]+$/
+      expect(mockQuery.sort.calls[0][0]).toBe('validField');
+
+      const mockQueryEmpty = createMockQuery();
+      new APIFeatures(mockQueryEmpty as unknown as Query<unknown[], unknown>, {
+        sort: ';;;, --, $where',
+      }).sort();
+
+      // When all terms are rejected, safely fallbacks to default '-createdAt'
+      expect(mockQueryEmpty.sort.calls[0][0]).toBe('-createdAt');
+    });
   });
 
   describe('sendSuccess response envelope', () => {

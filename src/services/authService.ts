@@ -147,42 +147,44 @@ export class AuthService {
       );
     }
 
-    // Check if token exists in user's active list
     const hashedIncomingToken = createTokenHash(refreshToken);
-    const tokenIndex = user.refreshTokens.findIndex(
-      (rt) => rt.token === hashedIncomingToken
+
+    // Issue new pair
+    const newAccessToken = signAccessToken(user._id.toString(), user.role);
+    const newRefreshToken = signRefreshToken(user._id.toString());
+    const hashedNewToken = createTokenHash(newRefreshToken);
+    const expiresAt = new Date(Date.now() + REFRESH_TOKEN_EXPIRES_MS);
+
+    // Atomically rotate: replace incoming token with new token in a single atomic operation
+    const updatedUser = await User.findOneAndUpdate(
+      {
+        _id: user._id,
+        isActive: true,
+        'refreshTokens.token': hashedIncomingToken,
+      },
+      {
+        $set: {
+          'refreshTokens.$.token': hashedNewToken,
+          'refreshTokens.$.expiresAt': expiresAt,
+          'refreshTokens.$.createdAt': new Date(),
+        },
+      },
+      { returnDocument: 'after' }
     );
 
-    if (tokenIndex === -1) {
-      // Reuse detection: clear all sessions if unknown or reused token is provided
-      user.refreshTokens = [];
-      await user.save();
+    if (!updatedUser) {
+      // Reuse detection: clear all sessions if unknown or already rotated token is provided
+      await User.findByIdAndUpdate(user._id, { $set: { refreshTokens: [] } });
       throw new AppError(
         'Invalid or reused refresh token. All sessions terminated.',
         401
       );
     }
 
-    // Remove the used refresh token (rotation)
-    user.refreshTokens.splice(tokenIndex, 1);
-
-    // Filter out any expired tokens
-    user.refreshTokens = user.refreshTokens.filter(
-      (rt) => rt.expiresAt > new Date()
-    );
-
-    // Issue new pair
-    const newAccessToken = signAccessToken(user._id.toString(), user.role);
-    const newRefreshToken = signRefreshToken(user._id.toString());
-
-    const expiresAt = new Date(Date.now() + REFRESH_TOKEN_EXPIRES_MS);
-    user.refreshTokens.push({
-      token: createTokenHash(newRefreshToken),
-      expiresAt,
-      createdAt: new Date(),
+    // Clean up any expired tokens
+    await User.findByIdAndUpdate(user._id, {
+      $pull: { refreshTokens: { expiresAt: { $lte: new Date() } } },
     });
-
-    await user.save();
 
     return {
       accessToken: newAccessToken,

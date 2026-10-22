@@ -2,12 +2,21 @@ import request from 'supertest';
 import app from '../src/app.js';
 
 describe('App Endpoints', () => {
-  it('GET /api/v1/health should return 200 OK', async () => {
+  it('GET /api/v1/health should return 200 OK (Liveness probe)', async () => {
     const res = await request(app).get('/api/v1/health');
 
     expect(res.statusCode).toEqual(200);
     expect(res.body).toHaveProperty('status', 'success');
     expect(res.body).toHaveProperty('message', 'API is running');
+    expect(res.body).toHaveProperty('uptime');
+  });
+
+  it('GET /api/v1/health/ready should return 503 when database is disconnected (Readiness probe)', async () => {
+    const res = await request(app).get('/api/v1/health/ready');
+
+    expect(res.statusCode).toEqual(503);
+    expect(res.body).toHaveProperty('status', 'error');
+    expect(res.body).toHaveProperty('database', 'disconnected');
   });
 
   it('GET /unknown-route should return 404', async () => {

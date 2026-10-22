@@ -20,6 +20,8 @@ export interface IRefreshToken {
   token: string;
   expiresAt: Date;
   createdAt: Date;
+  revokedAt?: Date | null;
+  replacedByToken?: string | null;
 }
 
 export interface IUser extends Document {

@@ -14,6 +14,7 @@ import { resolveOwnerId } from '../utils/resolveOwnerId.js';
 import { assertObjectId } from '../utils/objectId.js';
 import { CreateOrderInput } from '../validations/orderValidation.js';
 import { SHIPPING_FEES } from '../config/constants.js';
+import { logger } from '../config/logger.js';
 import { inventoryService, ProcessOrderItemInput } from './inventoryService.js';
 import {
   canCustomerCancelOrder,
@@ -60,37 +61,57 @@ export class OrderService {
     // 2) Validate stock and deduct inventory with automated rollback tracking via InventoryService
     const orderItems = await inventoryService.processOrderItems(itemsToProcess);
 
-    // 3) Calculate totals
-    const subtotal = orderItems.reduce(
-      (sum, item) => sum + item.price * item.quantity,
-      0
-    );
+    // 3) Calculate totals with 2-decimal rounding
+    const subtotal =
+      Math.round(
+        (orderItems.reduce((sum, item) => sum + item.price * item.quantity, 0) +
+          Number.EPSILON) *
+          100
+      ) / 100;
     const shippingFee =
       data.shippingMethod === 'express'
         ? SHIPPING_FEES.EXPRESS
         : SHIPPING_FEES.STANDARD;
-    const total = subtotal + shippingFee;
+    const total =
+      Math.round((subtotal + shippingFee + Number.EPSILON) * 100) / 100;
 
-    // 4) Create Order
-    const order = await Order.create({
-      user: userId,
-      items: orderItems,
-      shippingAddress: data.shippingAddress,
-      shippingMethod: data.shippingMethod,
-      shippingFee,
-      subtotal,
-      total,
-      paymentMethod: data.paymentMethod,
-      paymentStatus: 'pending',
-      status: 'pending',
-      contactEmail: data.contactEmail || undefined,
-      contactPhone: data.contactPhone || undefined,
-      notes: data.notes,
-    });
+    let order: IOrder;
+    try {
+      // 4) Create Order
+      order = await Order.create({
+        user: userId,
+        items: orderItems,
+        shippingAddress: data.shippingAddress,
+        shippingMethod: data.shippingMethod,
+        shippingFee,
+        subtotal,
+        total,
+        paymentMethod: data.paymentMethod,
+        paymentStatus: 'pending',
+        status: 'pending',
+        contactEmail: data.contactEmail || undefined,
+        contactPhone: data.contactPhone || undefined,
+        notes: data.notes,
+      });
 
-    // 5) Clear user's active cart after order placement if user is logged in
-    if (userId) {
-      await Cart.findOneAndUpdate({ user: userId }, { items: [] });
+      // 5) Clear user's active cart after order placement if user is logged in
+      if (userId) {
+        await Cart.findOneAndUpdate({ user: userId }, { items: [] });
+      }
+    } catch (createErr) {
+      // Compensation: restore decremented inventory if Order.create or subsequent steps fail
+      try {
+        await inventoryService.restoreInventory(orderItems);
+      } catch (restoreErr) {
+        logger.error(
+          'Failed to restore inventory during order creation rollback:',
+          {
+            restoreErr,
+            items: orderItems,
+          }
+        );
+      }
+      throw createErr;
     }
 
     return order;
@@ -208,23 +229,46 @@ export class OrderService {
       );
     }
 
-    // Restore product quantities via InventoryService
-    await inventoryService.restoreInventory(order.items);
-
-    order.status = 'cancelled';
-    order.cancelledAt = new Date();
-    order.cancelReason =
+    const cancelReason =
       reason ||
       (userRole === 'admin'
         ? 'Cancelled by store administrator'
         : 'Cancelled by customer');
 
-    if (order.paymentStatus === 'paid') {
-      order.paymentStatus = 'refunded';
+    // Atomically transition status to cancelled ONLY IF it is not already cancelled or delivered
+    const updatedOrder = await Order.findOneAndUpdate(
+      {
+        _id: order._id,
+        status: { $nin: ['cancelled', 'delivered'] },
+      },
+      {
+        $set: {
+          status: 'cancelled',
+          cancelledAt: new Date(),
+          cancelReason,
+          ...(order.paymentStatus === 'paid'
+            ? { paymentStatus: 'refunded' }
+            : {}),
+        },
+      },
+      { returnDocument: 'after' }
+    );
+
+    if (!updatedOrder) {
+      const refreshed = await Order.findById(order._id);
+      if (refreshed?.status === 'cancelled') {
+        throw new AppError('This order is already cancelled', 400);
+      }
+      if (refreshed?.status === 'delivered') {
+        throw new AppError('Delivered orders cannot be cancelled', 400);
+      }
+      throw new AppError('Order cannot be cancelled in its current state', 400);
     }
 
-    await order.save();
-    return order;
+    // Restore product quantities ONLY AFTER atomic cancellation succeeded
+    await inventoryService.restoreInventory(updatedOrder.items);
+
+    return updatedOrder;
   }
 
   /**
@@ -242,11 +286,32 @@ export class OrderService {
 
     validateOrderStatusTransition(order.status, newStatus);
 
-    // If changing to cancelled, restore stock
+    // If changing to cancelled, perform atomic transition and restore stock
     if (newStatus === 'cancelled' && order.status !== 'cancelled') {
-      await inventoryService.restoreInventory(order.items);
-      order.cancelledAt = new Date();
-      order.cancelReason = 'Cancelled by administrator';
+      const updatedOrder = await Order.findOneAndUpdate(
+        {
+          _id: order._id,
+          status: { $ne: 'cancelled' },
+        },
+        {
+          $set: {
+            status: 'cancelled',
+            cancelledAt: new Date(),
+            cancelReason: 'Cancelled by administrator',
+            ...(order.paymentStatus === 'paid'
+              ? { paymentStatus: 'refunded' }
+              : {}),
+          },
+        },
+        { returnDocument: 'after' }
+      );
+
+      if (!updatedOrder) {
+        throw new AppError('Order is already cancelled', 400);
+      }
+
+      await inventoryService.restoreInventory(updatedOrder.items);
+      return updatedOrder;
     }
 
     // Auto timestamp transitions

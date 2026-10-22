@@ -35,6 +35,14 @@ const refreshTokenSchema = new Schema<IRefreshToken>(
       type: Date,
       default: Date.now,
     },
+    revokedAt: {
+      type: Date,
+      default: null,
+    },
+    replacedByToken: {
+      type: String,
+      default: null,
+    },
   },
   { _id: false }
 );

@@ -10,7 +10,7 @@ import { globalErrorHandler } from './middlewares/errorHandler.js';
 import { AppError } from './utils/AppError.js';
 import { env } from './config/env.js';
 import { logger } from './config/logger.js';
-import { healthCheck } from './controllers/healthController.js';
+import { healthCheck, readinessCheck } from './controllers/healthController.js';
 import { requestId } from './middlewares/requestId.js';
 import productRouter from './routes/productRoutes.js';
 import authRouter from './routes/authRoutes.js';
@@ -67,9 +67,16 @@ app.use(
   })
 );
 
-// Development logging
+// Request logging
 if (env.NODE_ENV === 'development') {
   app.use(morgan('dev'));
+} else if (env.NODE_ENV === 'production') {
+  app.use(
+    morgan('combined', {
+      stream: { write: (msg: string) => logger.info(msg.trim()) },
+      skip: (req) => req.url === '/health' || req.url === '/api/v1/health',
+    })
+  );
 }
 
 // Limit requests from same API
@@ -184,8 +191,9 @@ app.use('/api/v1/products', productRouter);
 app.use('/api/v1/cart', cartRouter);
 app.use('/api/v1/orders', orderRouter);
 
-// Health check endpoint
+// Health check and readiness endpoints
 app.get('/api/v1/health', healthCheck);
+app.get('/api/v1/health/ready', readinessCheck);
 
 // Handle unhandled routes
 app.use((req: Request, _res: Response, next: NextFunction) => {

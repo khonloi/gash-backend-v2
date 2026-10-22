@@ -1,3 +1,4 @@
+import mongoose from 'mongoose';
 import { env } from './config/env.js';
 import app from './app.js';
 import { connectDB } from './config/db.js';
@@ -34,17 +35,34 @@ process.on('unhandledRejection', (reason: unknown) => {
   });
 });
 
-process.on('SIGTERM', () => {
-  logger.info('SIGTERM RECEIVED. Shutting down gracefully');
-  server.close(() => {
-    logger.info('Process terminated!');
-  });
-});
+let isShuttingDown = false;
 
-process.on('SIGINT', () => {
-  logger.info('SIGINT RECEIVED. Shutting down gracefully');
-  server.close(() => {
-    logger.info('Process terminated!');
-    process.exit(0);
+const gracefulShutdown = async (signal: string) => {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+  logger.info(`${signal} received. Initiating graceful shutdown...`);
+
+  // Force process exit after 10 seconds if connections fail to drain
+  const forceExitTimeout = setTimeout(() => {
+    logger.error('Graceful shutdown timed out after 10 seconds. Forcing exit.');
+    process.exit(1);
+  }, 10000);
+  forceExitTimeout.unref();
+
+  server.close(async () => {
+    logger.info('HTTP server closed. All active requests completed.');
+    try {
+      if (mongoose.connection.readyState !== 0) {
+        await mongoose.disconnect();
+        logger.info('MongoDB connection closed.');
+      }
+      process.exit(0);
+    } catch (err) {
+      logger.error('Error during database disconnection:', err);
+      process.exit(1);
+    }
   });
-});
+};
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
