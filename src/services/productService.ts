@@ -16,6 +16,29 @@ import { assertObjectId } from '../utils/objectId.js';
 
 export class ProductService {
   /**
+   * Generates a collision-free URL slug by checking existing products
+   * and appending incrementing numeric suffixes (-1, -2, etc.) when needed.
+   */
+  async generateUniqueSlug(name: string, excludeId?: string): Promise<string> {
+    const baseSlug = slugify(name);
+    let candidate = baseSlug;
+    let counter = 1;
+
+    while (true) {
+      const query: Record<string, unknown> = { slug: candidate };
+      if (excludeId) {
+        query._id = { $ne: excludeId };
+      }
+      const existing = await Product.findOne(query).select('_id');
+      if (!existing) {
+        return candidate;
+      }
+      candidate = `${baseSlug}-${counter}`;
+      counter++;
+    }
+  }
+
+  /**
    * Create a new product with unique SKU check
    */
   async createProduct(data: CreateProductInput): Promise<IProduct> {
@@ -29,9 +52,12 @@ export class ProductService {
       );
     }
 
+    const slug = await this.generateUniqueSlug(data.name);
+
     const product = await Product.create({
       ...data,
       sku: data.sku.toUpperCase(),
+      slug,
     });
 
     return product;
@@ -100,7 +126,7 @@ export class ProductService {
     // Update slug if name changed and slug not explicitly provided
     const payload: Record<string, unknown> = { ...updateData };
     if (updateData.name) {
-      payload.slug = slugify(updateData.name);
+      payload.slug = await this.generateUniqueSlug(updateData.name, id);
     }
 
     const product = await Product.findByIdAndUpdate(id, payload, {

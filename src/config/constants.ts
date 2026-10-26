@@ -4,6 +4,7 @@ import { OrderStatus } from '../types/order.js';
  * Security & Token Lifetimes (in milliseconds)
  */
 export const REFRESH_TOKEN_EXPIRES_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+export const REFRESH_TOKEN_GRACE_PERIOD_MS = 30 * 1000; // 30 seconds rotation grace window
 export const PASSWORD_RESET_EXPIRES_MS = 10 * 60 * 1000; // 10 minutes
 export const EMAIL_VERIFICATION_EXPIRES_MS = 24 * 60 * 60 * 1000; // 24 hours
 export const MAX_ACTIVE_REFRESH_TOKENS = 10;

@@ -2,33 +2,26 @@ openapi: 3.0.3
 info:
   title: GASH Backend REST API
   description: |
-    Production-ready REST API for the GASH Sporting Goods e-commerce platform.
-    Features robust authentication with HS256 JWT access tokens & atomic refresh token rotation,
-    inventory decrement with compensation safeguards, and full product/cart/order management.
+    REST API for the GASH sporting goods store.
+
+    Source of truth: `src/routes/*` and `src/validations/*`. Response bodies are
+    only loosely typed here; request bodies mirror the zod schemas.
+    Authentication: HS256 JWT access token in `Authorization: Bearer <token>`.
   version: 1.0.0
-  contact:
-    name: GASH Engineering
-    email: engineering@example.com
   license:
     name: ISC
 
 servers:
   - url: http://localhost:5000/api/v1
-    description: Local development server
-  - url: https://api.yourdomain.com/api/v1
-    description: Production API server
+    description: Local development
 
 tags:
   - name: Health
-    description: Liveness and database-verified readiness probes for container orchestration.
   - name: Auth
-    description: User authentication, registration, JWT tokens, and password reset flows.
+  - name: Users
   - name: Products
-    description: Product catalog, category filtering, search, and reviews.
   - name: Cart
-    description: Shopping cart management for authenticated users.
   - name: Orders
-    description: Checkout, order placement, order status lifecycle, and cancellations.
 
 components:
   securitySchemes:
@@ -36,740 +29,748 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
-      description: |
-        Access token passed in the Authorization header: `Bearer <token>`.
-        Must be a signed HS256 access token (`type: "access"`).
-    SessionCookie:
-      type: apiKey
-      in: cookie
-      name: jocksport_session
-      description: Session cookie used by frontend Next.js rewrite proxy.
+      description: HS256 access token (`type=access`). Refresh tokens are rejected.
+
+  responses:
+    Unauthorized:
+      description: Missing, invalid or expired token.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Forbidden:
+      description: Authenticated but role not permitted.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    ValidationError:
+      description: Request failed zod validation.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    TooManyRequests:
+      description: Rate limit exceeded.
+
+  parameters:
+    Id:
+      in: path
+      name: id
+      required: true
+      schema: { type: string, description: MongoDB ObjectId }
+    OrderId:
+      in: path
+      name: orderId
+      required: true
+      schema: { type: string, description: MongoDB ObjectId }
+    ItemId:
+      in: path
+      name: itemId
+      required: true
+      schema: { type: string }
+    AddressId:
+      in: path
+      name: addressId
+      required: true
+      schema: { type: string }
+    Token:
+      in: path
+      name: token
+      required: true
+      schema: { type: string }
 
   schemas:
-    StandardSuccessResponse:
+    Error:
       type: object
       properties:
-        status:
-          type: string
-          example: success
-        data:
-          type: object
-          description: Payload data
+        status: { type: string, enum: [fail, error] }
+        message: { type: string }
 
-    PaginatedResponse:
+    Envelope:
       type: object
       properties:
-        status:
-          type: string
-          example: success
-        results:
-          type: integer
-          example: 12
+        status: { type: string, example: success }
+        data: { type: object }
+
+    Paginated:
+      type: object
+      properties:
+        status: { type: string, example: success }
+        results: { type: integer }
         pagination:
           type: object
           properties:
-            page:
-              type: integer
-              example: 1
-            limit:
-              type: integer
-              example: 10
-            totalPages:
-              type: integer
-              example: 2
-            totalResults:
-              type: integer
-              example: 12
-        data:
-          type: array
-          items:
-            type: object
-
-    StandardErrorResponse:
-      type: object
-      properties:
-        status:
-          type: string
-          enum: [fail, error]
-          example: fail
-        message:
-          type: string
-          example: Resource not found or invalid input.
-        errors:
-          type: array
-          items:
-            type: object
-            properties:
-              field:
-                type: string
-              message:
-                type: string
-
-    SafeUser:
-      type: object
-      properties:
-        _id:
-          type: string
-          example: 60d0fe4f5311236168a109ca
-        firstName:
-          type: string
-          example: John
-        lastName:
-          type: string
-          example: Doe
-        email:
-          type: string
-          format: email
-          example: john.doe@example.com
-        role:
-          type: string
-          enum: [customer, admin]
-          example: customer
-        avatar:
-          type: string
-          format: uri
-        phone:
-          type: string
-          example: "+1234567890"
-        isActive:
-          type: boolean
-          example: true
-        isEmailVerified:
-          type: boolean
-          example: false
-        addresses:
-          type: array
-          items:
-            type: object
-            properties:
-              street:
-                type: string
-              city:
-                type: string
-              state:
-                type: string
-              zipCode:
-                type: string
-              country:
-                type: string
-              isDefault:
-                type: boolean
-        createdAt:
-          type: string
-          format: date-time
-        updatedAt:
-          type: string
-          format: date-time
+            page: { type: integer }
+            limit: { type: integer, maximum: 100 }
+            totalPages: { type: integer }
+            totalResults: { type: integer }
+        data: { type: object }
 
     RegisterInput:
       type: object
-      required:
-        - firstName
-        - lastName
-        - email
-        - password
+      required: [firstName, lastName, email, password, passwordConfirm]
       properties:
-        firstName:
-          type: string
-          minLength: 2
-          maxLength: 50
-          example: John
-        lastName:
-          type: string
-          minLength: 2
-          maxLength: 50
-          example: Doe
-        email:
-          type: string
-          format: email
-          example: john.doe@example.com
+        firstName: { type: string, minLength: 1, maxLength: 50 }
+        lastName: { type: string, minLength: 1, maxLength: 50 }
+        email: { type: string, format: email }
         password:
           type: string
           minLength: 8
-          maxLength: 128
-          example: SecureP@ssw0rd!
+          description: Needs upper, lower, digit and one of `@$!%*?&`.
+        passwordConfirm: { type: string }
 
     LoginInput:
       type: object
-      required:
-        - email
-        - password
+      required: [email, password]
       properties:
-        email:
-          type: string
-          format: email
-          example: john.doe@example.com
-        password:
-          type: string
-          example: SecureP@ssw0rd!
+        email: { type: string, format: email }
+        password: { type: string }
 
     RefreshTokenInput:
       type: object
-      required:
-        - refreshToken
+      required: [refreshToken]
       properties:
-        refreshToken:
-          type: string
-          example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+        refreshToken: { type: string }
+
+    ResetPasswordInput:
+      type: object
+      required: [password, passwordConfirm]
+      properties:
+        password: { type: string, minLength: 8 }
+        passwordConfirm: { type: string }
+
+    ChangePasswordInput:
+      type: object
+      required: [currentPassword, newPassword, newPasswordConfirm]
+      properties:
+        currentPassword: { type: string }
+        newPassword: { type: string, minLength: 8 }
+        newPasswordConfirm: { type: string }
 
     AuthTokens:
       type: object
       properties:
-        accessToken:
-          type: string
-          example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
-        refreshToken:
-          type: string
-          example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+        accessToken: { type: string }
+        refreshToken: { type: string }
 
     AuthResponse:
       type: object
       properties:
-        status:
-          type: string
-          example: success
+        status: { type: string, example: success }
         data:
           type: object
           properties:
-            user:
-              $ref: '#/components/schemas/SafeUser'
-            tokens:
-              $ref: '#/components/schemas/AuthTokens'
+            user: { type: object }
+            tokens: { $ref: '#/components/schemas/AuthTokens' }
 
-    Product:
+    CartItemInput:
       type: object
+      required: [productId, quantity]
       properties:
-        _id:
-          type: string
-          example: 60d0fe4f5311236168a109ca
-        name:
-          type: string
-          example: Pro Marathon Runner Shoes
-        slug:
-          type: string
-          example: pro-marathon-runner-shoes
-        description:
-          type: string
-        price:
-          type: number
-          format: float
-          example: 129.99
-        compareAtPrice:
-          type: number
-          format: float
-          example: 159.99
-        category:
-          type: string
-          example: Footwear
-        images:
-          type: array
-          items:
-            type: string
-            format: uri
-        stock:
-          type: integer
-          minimum: 0
-          example: 45
-        ratingsAverage:
-          type: number
-          minimum: 1
-          maximum: 5
-          example: 4.8
-        ratingsQuantity:
-          type: integer
-          example: 32
-        isFeatured:
-          type: boolean
-          example: true
-        isActive:
-          type: boolean
-          example: true
+        productId: { type: string }
+        quantity: { type: integer, minimum: 1 }
+        size: { type: string }
+        color: { type: string }
 
-    CartItem:
+    ShippingAddress:
       type: object
+      required: [fullName, phone, addressLine1, city]
       properties:
-        product:
-          $ref: '#/components/schemas/Product'
-        quantity:
-          type: integer
-          minimum: 1
-          example: 2
-        price:
-          type: number
-          format: float
-          example: 129.99
+        fullName: { type: string, minLength: 2, maxLength: 100 }
+        phone: { type: string, minLength: 8, maxLength: 20 }
+        addressLine1: { type: string, minLength: 3, maxLength: 200 }
+        addressLine2: { type: string, maxLength: 200 }
+        city: { type: string }
+        state: { type: string }
+        postalCode: { type: string }
+        country: { type: string, default: Vietnam }
 
-    Cart:
+    CreateOrderInput:
       type: object
+      required: [shippingAddress]
       properties:
-        _id:
-          type: string
-        user:
-          type: string
-        items:
-          type: array
-          items:
-            $ref: '#/components/schemas/CartItem'
-        totalPrice:
-          type: number
-          format: float
-          example: 259.98
-
-    OrderItem:
-      type: object
-      properties:
-        product:
-          type: string
-        name:
-          type: string
-        quantity:
-          type: integer
-          minimum: 1
-        price:
-          type: number
-          format: float
-        image:
-          type: string
-
-    Order:
-      type: object
-      properties:
-        _id:
-          type: string
-        user:
-          type: string
-        orderItems:
-          type: array
-          items:
-            $ref: '#/components/schemas/OrderItem'
-        shippingAddress:
-          type: object
-          required: [street, city, state, zipCode, country]
-          properties:
-            street: { type: string }
-            city: { type: string }
-            state: { type: string }
-            zipCode: { type: string }
-            country: { type: string }
+        shippingAddress: { $ref: '#/components/schemas/ShippingAddress' }
+        shippingMethod: { type: string, enum: [standard, express], default: standard }
         paymentMethod:
           type: string
-          enum: [card, cod, momo, vnpay]
-          example: cod
-        itemsPrice:
-          type: number
-          format: float
-        shippingPrice:
-          type: number
-          format: float
-        taxPrice:
-          type: number
-          format: float
-        totalPrice:
-          type: number
-          format: float
-        status:
-          type: string
-          enum: [pending, processing, shipped, delivered, cancelled]
-          example: pending
-        isPaid:
-          type: boolean
-        paidAt:
-          type: string
-          format: date-time
-        createdAt:
-          type: string
-          format: date-time
+          enum: [cod, credit_card, apple_pay, paypal, momo, vnpay]
+          default: cod
+        contactEmail: { type: string, format: email }
+        contactPhone: { type: string }
+        notes: { type: string, maxLength: 1000 }
+        items:
+          type: array
+          description: Optional explicit items (e.g. guest checkout).
+          items: { $ref: '#/components/schemas/CartItemInput' }
+
+    ProductInput:
+      type: object
+      required: [name, description, price, sku, category]
+      properties:
+        name: { type: string, minLength: 3, maxLength: 200 }
+        description: { type: string, maxLength: 5000 }
+        shortDescription: { type: string, maxLength: 500 }
+        price: { type: number, minimum: 0 }
+        compareAtPrice: { type: number, minimum: 0 }
+        costPrice: { type: number, minimum: 0 }
+        sku: { type: string }
+        quantity: { type: integer, minimum: 0, default: 0 }
+        category: { type: string }
+        subcategory: { type: string }
+        brand: { type: string }
+        tags: { type: array, items: { type: string } }
+        status: { type: string, enum: [draft, active, archived], default: draft }
+        isFeatured: { type: boolean, default: false }
 
 paths:
   /health:
     get:
       tags: [Health]
-      summary: Liveness probe
-      description: Returns 200 OK if the Node.js process is active and accepting HTTP connections.
+      summary: Liveness probe (no DB check)
       responses:
-        '200':
-          description: Server is alive.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  status:
-                    type: string
-                    example: success
-                  message:
-                    type: string
-                    example: Server is healthy and running
-                  timestamp:
-                    type: string
-                    format: date-time
-                  uptime:
-                    type: number
+        '200': { description: Process is alive. }
 
   /health/ready:
     get:
       tags: [Health]
-      summary: Readiness probe
-      description: Checks database connectivity. Returns 200 if connected, 503 if disconnected.
+      summary: Readiness probe (checks MongoDB)
       responses:
-        '200':
-          description: Database is connected and ready.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  status:
-                    type: string
-                    example: success
-                  database:
-                    type: string
-                    example: connected
-        '503':
-          description: Database disconnected or unavailable.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/StandardErrorResponse'
+        '200': { description: Database connected. }
+        '503': { description: Database unavailable. }
 
   /auth/register:
     post:
       tags: [Auth]
-      summary: Register a new user account
+      summary: Register (rate limited 20 / 15 min / IP with login)
       requestBody:
         required: true
         content:
           application/json:
-            schema:
-              $ref: '#/components/schemas/RegisterInput'
+            schema: { $ref: '#/components/schemas/RegisterInput' }
       responses:
         '201':
-          description: Account created successfully.
+          description: Created.
           content:
             application/json:
-              schema:
-                $ref: '#/components/schemas/AuthResponse'
-        '400':
-          description: Validation error or duplicate email.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/StandardErrorResponse'
+              schema: { $ref: '#/components/schemas/AuthResponse' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
 
   /auth/login:
     post:
       tags: [Auth]
-      summary: Authenticate user with credentials
+      summary: Log in (rate limited 20 / 15 min / IP)
       requestBody:
         required: true
         content:
           application/json:
-            schema:
-              $ref: '#/components/schemas/LoginInput'
+            schema: { $ref: '#/components/schemas/LoginInput' }
       responses:
         '200':
-          description: Authentication successful.
+          description: OK.
           content:
             application/json:
-              schema:
-                $ref: '#/components/schemas/AuthResponse'
-        '401':
-          description: Incorrect email or password.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/StandardErrorResponse'
+              schema: { $ref: '#/components/schemas/AuthResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
 
   /auth/refresh-token:
     post:
       tags: [Auth]
-      summary: Rotate and exchange refresh token for a new token pair
-      description: Rate-limited to 30 requests per 15-minute window. Uses atomic positional updates.
+      summary: Rotate refresh token (rate limited 60 / 15 min / IP)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RefreshTokenInput' }
+      responses:
+        '200':
+          description: New token pair.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /auth/logout:
+    post:
+      tags: [Auth]
+      summary: Log out current session
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200': { description: OK. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /auth/logout-all:
+    post:
+      tags: [Auth]
+      summary: Revoke all refresh tokens
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200': { description: OK. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /auth/forgot-password:
+    post:
+      tags: [Auth]
+      summary: Request password reset (rate limited 5 / 15 min / IP)
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/RefreshTokenInput'
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email }
       responses:
-        '200':
-          description: Tokens rotated successfully.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AuthResponse'
-        '401':
-          description: Invalid or expired refresh token, or reuse detected.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/StandardErrorResponse'
-        '429':
-          description: Rate limit exceeded.
+        '200': { description: Accepted. }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
 
-  /auth/me:
+  /auth/reset-password/{token}:
+    patch:
+      tags: [Auth]
+      summary: Reset password with emailed token (rate limited 5 / 15 min / IP)
+      parameters:
+        - { $ref: '#/components/parameters/Token' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ResetPasswordInput' }
+      responses:
+        '200': { description: Password changed. }
+        '400': { $ref: '#/components/responses/ValidationError' }
+
+  /auth/verify-email/{token}:
     get:
       tags: [Auth]
-      summary: Get authenticated user profile
-      security:
-        - BearerAuth: []
+      summary: Verify email address
+      parameters:
+        - { $ref: '#/components/parameters/Token' }
+      responses:
+        '200': { description: Verified. }
+        '400': { description: Invalid or expired token. }
+
+  /users/me:
+    get:
+      tags: [Users]
+      summary: Current user profile
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200': { description: OK. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    patch:
+      tags: [Users]
+      summary: Update current user profile
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200': { description: OK. }
+        '400': { $ref: '#/components/responses/ValidationError' }
+    delete:
+      tags: [Users]
+      summary: Deactivate current account
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200': { description: OK. }
+
+  /users/me/password:
+    patch:
+      tags: [Users]
+      summary: Change password
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ChangePasswordInput' }
+      responses:
+        '200': { description: OK. }
+        '400': { $ref: '#/components/responses/ValidationError' }
+
+  /users/me/addresses:
+    get:
+      tags: [Users]
+      summary: List saved addresses
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200': { description: OK. }
+    post:
+      tags: [Users]
+      summary: Add address
+      security: [{ BearerAuth: [] }]
+      responses:
+        '201': { description: Created. }
+        '400': { $ref: '#/components/responses/ValidationError' }
+
+  /users/me/addresses/{addressId}:
+    patch:
+      tags: [Users]
+      summary: Update address
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/AddressId' }
+      responses:
+        '200': { description: OK. }
+    delete:
+      tags: [Users]
+      summary: Remove address
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/AddressId' }
+      responses:
+        '204': { description: Removed. }
+
+  /users:
+    get:
+      tags: [Users]
+      summary: List users (admin)
+      security: [{ BearerAuth: [] }]
       responses:
         '200':
-          description: Current user profile.
+          description: OK.
           content:
             application/json:
-              schema:
-                type: object
-                properties:
-                  status:
-                    type: string
-                    example: success
-                  data:
-                    type: object
-                    properties:
-                      user:
-                        $ref: '#/components/schemas/SafeUser'
-        '401':
-          description: Unauthorized.
+              schema: { $ref: '#/components/schemas/Paginated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /users/{id}:
+    get:
+      tags: [Users]
+      summary: Get user (admin)
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/Id' }
+      responses:
+        '200': { description: OK. }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    delete:
+      tags: [Users]
+      summary: Delete user (admin)
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/Id' }
+      responses:
+        '204': { description: Deleted. }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /users/{id}/role:
+    patch:
+      tags: [Users]
+      summary: Change user role (admin)
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/Id' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role]
+              properties:
+                role: { type: string, enum: [customer, seller, admin] }
+      responses:
+        '200': { description: OK. }
+        '403': { $ref: '#/components/responses/Forbidden' }
 
   /products:
     get:
       tags: [Products]
-      summary: Query and paginate products
+      summary: List products (public)
+      description: |
+        NOTE: currently returns products of every `status` (draft/archived
+        included) to anonymous callers. See audit finding N1.
       parameters:
-        - in: query
-          name: page
-          schema:
-            type: integer
-            default: 1
-        - in: query
-          name: limit
-          schema:
-            type: integer
-            default: 10
-            maximum: 100
-        - in: query
-          name: category
-          schema:
-            type: string
-        - in: query
-          name: minPrice
-          schema:
-            type: number
-        - in: query
-          name: maxPrice
-          schema:
-            type: number
-        - in: query
-          name: sort
-          schema:
-            type: string
-            example: -price,ratingsAverage
-        - in: query
-          name: keyword
-          schema:
-            type: string
-        - in: query
-          name: fields
-          schema:
-            type: string
-            example: name,price,slug,images
+        - { in: query, name: page, schema: { type: integer, default: 1 } }
+        - { in: query, name: limit, schema: { type: integer, default: 10, maximum: 100 } }
+        - { in: query, name: keyword, schema: { type: string } }
+        - { in: query, name: category, schema: { type: string } }
+        - { in: query, name: subcategory, schema: { type: string } }
+        - { in: query, name: brand, schema: { type: string } }
+        - { in: query, name: status, schema: { type: string, enum: [draft, active, archived] } }
+        - { in: query, name: isFeatured, schema: { type: boolean } }
+        - { in: query, name: minPrice, schema: { type: number } }
+        - { in: query, name: maxPrice, schema: { type: number } }
+        - { in: query, name: sort, schema: { type: string, example: '-price,name' } }
+        - { in: query, name: fields, schema: { type: string } }
       responses:
         '200':
-          description: List of paginated products.
+          description: OK.
           content:
             application/json:
-              schema:
-                $ref: '#/components/schemas/PaginatedResponse'
+              schema: { $ref: '#/components/schemas/Paginated' }
+    post:
+      tags: [Products]
+      summary: Create product (admin, seller)
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProductInput' }
+      responses:
+        '201': { description: Created. }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /products/stats:
+    get:
+      tags: [Products]
+      summary: Category statistics (public)
+      responses:
+        '200': { description: OK. }
+
+  /products/featured:
+    get:
+      tags: [Products]
+      summary: Featured products (public)
+      responses:
+        '200': { description: OK. }
+
+  /products/slug/{slug}:
+    get:
+      tags: [Products]
+      summary: Get product by slug (public)
+      parameters:
+        - { in: path, name: slug, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK. }
+        '404': { description: Not found. }
 
   /products/{id}:
     get:
       tags: [Products]
-      summary: Get product details by ID
+      summary: Get product by id (public)
       parameters:
-        - in: path
-          name: id
-          required: true
-          schema:
-            type: string
+        - { $ref: '#/components/parameters/Id' }
       responses:
-        '200':
-          description: Product details.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  status: { type: string, example: success }
-                  data:
-                    type: object
-                    properties:
-                      product: { $ref: '#/components/schemas/Product' }
-        '404':
-          description: Product not found.
+        '200': { description: OK. }
+        '404': { description: Not found. }
+    patch:
+      tags: [Products]
+      summary: Update product (admin, seller)
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/Id' }
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProductInput' }
+      responses:
+        '200': { description: OK. }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    delete:
+      tags: [Products]
+      summary: Hard-delete product (admin)
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/Id' }
+      responses:
+        '204': { description: Deleted. }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /products/{id}/stock:
+    patch:
+      tags: [Products]
+      summary: Adjust stock (admin, seller)
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/Id' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [quantity]
+              properties:
+                quantity: { type: integer }
+                operation: { type: string, enum: [increment, decrement, set], default: set }
+      responses:
+        '200': { description: OK. }
+        '400': { description: Invalid quantity or insufficient stock. }
+        '403': { $ref: '#/components/responses/Forbidden' }
 
   /cart:
     get:
       tags: [Cart]
-      summary: Get current authenticated user's cart
-      security:
-        - BearerAuth: []
+      summary: Get cart
+      security: [{ BearerAuth: [] }]
       responses:
-        '200':
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  status: { type: string, example: success }
-                  data:
-                    type: object
-                    properties:
-                      cart: { $ref: '#/components/schemas/Cart' }
+        '200': { description: OK. }
+    delete:
+      tags: [Cart]
+      summary: Clear cart
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200': { description: OK. }
 
   /cart/items:
     post:
       tags: [Cart]
-      summary: Add an item to the shopping cart
-      security:
-        - BearerAuth: []
+      summary: Add item
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CartItemInput' }
+      responses:
+        '200': { description: OK. }
+        '400': { $ref: '#/components/responses/ValidationError' }
+
+  /cart/items/{itemId}:
+    patch:
+      tags: [Cart]
+      summary: Update item quantity
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/ItemId' }
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [productId, quantity]
+              required: [quantity]
               properties:
-                productId: { type: string }
                 quantity: { type: integer, minimum: 1 }
       responses:
-        '200':
-          description: Cart updated.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  status: { type: string, example: success }
-                  data:
-                    type: object
-                    properties:
-                      cart: { $ref: '#/components/schemas/Cart' }
+        '200': { description: OK. }
+    delete:
+      tags: [Cart]
+      summary: Remove item
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/ItemId' }
+      responses:
+        '200': { description: OK. }
+
+  /cart/merge:
+    post:
+      tags: [Cart]
+      summary: Merge a guest cart into the user cart
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                items:
+                  type: array
+                  items: { $ref: '#/components/schemas/CartItemInput' }
+      responses:
+        '200': { description: OK. }
 
   /orders:
     post:
       tags: [Orders]
-      summary: Place a new order with atomic stock verification & compensation
-      description: Rate-limited to 15 order submissions per 15-minute window per IP.
-      security:
-        - BearerAuth: []
+      summary: Create order (guest or authenticated; rate limited 30 / 15 min / IP)
+      description: |
+        Bearer token is OPTIONAL (`optionalAuth`); an invalid token is ignored
+        and the request proceeds as a guest.
+      security: [{}, { BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateOrderInput' }
+      responses:
+        '201': { description: Created. }
+        '400': { description: Validation error, empty cart or insufficient stock. }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+    get:
+      tags: [Orders]
+      summary: List all orders (admin)
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: OK.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Paginated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /orders/my:
+    get:
+      tags: [Orders]
+      summary: List the current user's orders
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200': { description: OK. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /orders/{orderId}:
+    get:
+      tags: [Orders]
+      summary: Get order (owner or admin)
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/OrderId' }
+      responses:
+        '200': { description: OK. }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { description: Not found. }
+
+  /orders/{orderId}/cancel:
+    patch:
+      tags: [Orders]
+      summary: Cancel order and atomically restore stock (owner or admin)
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/OrderId' }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: string, maxLength: 500 }
+      responses:
+        '200': { description: Cancelled. }
+        '400': { description: Not cancellable in its current state. }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /orders/{orderId}/status:
+    patch:
+      tags: [Orders]
+      summary: Update order status (admin)
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/OrderId' }
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [shippingAddress, paymentMethod]
+              required: [status]
               properties:
-                shippingAddress:
-                  type: object
-                  required: [street, city, state, zipCode, country]
-                  properties:
-                    street: { type: string }
-                    city: { type: string }
-                    state: { type: string }
-                    zipCode: { type: string }
-                    country: { type: string }
-                paymentMethod:
+                status:
                   type: string
-                  enum: [card, cod, momo, vnpay]
+                  enum: [pending, confirmed, processing, shipped, delivered, cancelled, refunded]
       responses:
-        '201':
-          description: Order placed successfully.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  status: { type: string, example: success }
-                  data:
-                    type: object
-                    properties:
-                      order: { $ref: '#/components/schemas/Order' }
-        '400':
-          description: Cart empty, insufficient inventory, or invalid address.
-        '429':
-          description: Order creation rate limit exceeded.
+        '200': { description: OK. }
+        '400': { description: Invalid state transition. }
+        '403': { $ref: '#/components/responses/Forbidden' }
 
-    get:
-      tags: [Orders]
-      summary: List user orders (or all orders for admin)
-      security:
-        - BearerAuth: []
-      parameters:
-        - in: query
-          name: page
-          schema: { type: integer, default: 1 }
-        - in: query
-          name: limit
-          schema: { type: integer, default: 10 }
-      responses:
-        '200':
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/PaginatedResponse'
-
-  /orders/{id}:
-    get:
-      tags: [Orders]
-      summary: Get order details by ID
-      security:
-        - BearerAuth: []
-      parameters:
-        - in: path
-          name: id
-          required: true
-          schema: { type: string }
-      responses:
-        '200':
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  status: { type: string, example: success }
-                  data:
-                    type: object
-                    properties:
-                      order: { $ref: '#/components/schemas/Order' }
-        '404':
-          description: Order not found.
-
-  /orders/{id}/cancel:
+  /orders/{orderId}/payment:
     patch:
       tags: [Orders]
-      summary: Cancel an order and atomically restore reserved stock
-      security:
-        - BearerAuth: []
+      summary: Update payment status (admin)
+      security: [{ BearerAuth: [] }]
       parameters:
-        - in: path
-          name: id
-          required: true
-          schema: { type: string }
+        - { $ref: '#/components/parameters/OrderId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [paymentStatus]
+              properties:
+                paymentStatus: { type: string, enum: [pending, paid, failed, refunded] }
       responses:
-        '200':
-          description: Order cancelled and stock restored.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  status: { type: string, example: success }
-                  data:
-                    type: object
-                    properties:
-                      order: { $ref: '#/components/schemas/Order' }
-        '400':
-          description: Order cannot be cancelled (e.g. already delivered or cancelled).
+        '200': { description: OK. }
+        '403': { $ref: '#/components/responses/Forbidden' }

@@ -1,4 +1,5 @@
 import { User } from '../models/User.js';
+import { Cart } from '../models/Cart.js';
 import {
   IAddress,
   IUser,
@@ -231,13 +232,20 @@ export class UserService {
   /**
    * Admin: Permanently delete a user
    */
-  async deleteUser(id: string): Promise<void> {
+  async deleteUser(id: string, adminId?: string): Promise<void> {
     assertObjectId(id, 'user ID');
+
+    if (adminId && adminId === id) {
+      throw new AppError('Administrators cannot delete their own account', 400);
+    }
 
     const user = await User.findByIdAndDelete(id);
     if (!user) {
       throw new AppError(`No user found with ID "${id}"`, 404);
     }
+
+    // Cascade: Clean up associated user cart
+    await Cart.findOneAndDelete({ user: id });
   }
 }
 

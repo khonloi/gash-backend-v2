@@ -224,9 +224,9 @@ productSchema.virtual('discountPercentage').get(function (this: IProduct) {
   return 0;
 });
 
-// Auto-generate unique slug from name
+// Auto-generate unique slug from name if not already provided
 productSchema.pre('validate', function () {
-  if (this.isModified('name') || !this.slug) {
+  if (!this.slug && this.name) {
     this.slug = slugify(this.name);
   }
 });

@@ -177,7 +177,24 @@ describe('Auth Integration Tests', () => {
       expect(res.body.data.tokens).toHaveProperty('refreshToken');
       expect(res.body.data.tokens.refreshToken).not.toBe(initialRefreshToken);
 
-      // Verify that using the old token again fails and triggers reuse detection
+      // Verify that within grace window, the token can be refreshed concurrently (multi-tab support)
+      const concurrentRes = await request(app)
+        .post('/api/v1/auth/refresh-token')
+        .send({ refreshToken: initialRefreshToken });
+
+      expect(concurrentRes.statusCode).toBe(200);
+      expect(concurrentRes.body.data.tokens).toHaveProperty('refreshToken');
+
+      // Simulate grace period expiration (set revokedAt to 35s ago)
+      await User.updateOne(
+        {
+          email: sampleUser.email.toLowerCase(),
+          'refreshTokens.token': createTokenHash(initialRefreshToken),
+        },
+        { $set: { 'refreshTokens.$.revokedAt': new Date(Date.now() - 35000) } }
+      );
+
+      // Verify that using the old token after grace window fails and triggers reuse detection
       const reuseRes = await request(app)
         .post('/api/v1/auth/refresh-token')
         .send({ refreshToken: initialRefreshToken });
@@ -370,15 +387,15 @@ describe('Auth Integration Tests', () => {
       const rotatedRefreshToken = refreshRes.body.data.tokens.refreshToken;
       expect(rotatedRefreshToken).not.toBe(rawRefreshToken);
 
-      // Verify DB now holds the hash of rotated token
+      // Verify DB now holds the active rotated token
       const updatedUser = await User.findOne({
         email: sampleUser.email.toLowerCase(),
       }).select('+refreshTokens');
 
-      expect(updatedUser?.refreshTokens).toHaveLength(1);
-      expect(updatedUser?.refreshTokens[0].token).toBe(
-        createTokenHash(rotatedRefreshToken)
+      const activeToken = updatedUser?.refreshTokens.find(
+        (rt) => !rt.revokedAt
       );
+      expect(activeToken?.token).toBe(createTokenHash(rotatedRefreshToken));
     });
 
     it('should detect reuse of already rotated token and wipe all user sessions', async () => {
@@ -393,7 +410,16 @@ describe('Auth Integration Tests', () => {
         .post('/api/v1/auth/refresh-token')
         .send({ refreshToken: initialRefreshToken });
 
-      // Attempt reuse of the initial (now invalidated) token
+      // Simulate expiration of grace period (set revokedAt to 35s ago)
+      await User.updateOne(
+        {
+          email: sampleUser.email.toLowerCase(),
+          'refreshTokens.token': createTokenHash(initialRefreshToken),
+        },
+        { $set: { 'refreshTokens.$.revokedAt': new Date(Date.now() - 35000) } }
+      );
+
+      // Attempt reuse of the initial (now invalidated) token after grace period
       const reuseRes = await request(app)
         .post('/api/v1/auth/refresh-token')
         .send({ refreshToken: initialRefreshToken });
@@ -406,6 +432,38 @@ describe('Auth Integration Tests', () => {
         email: sampleUser.email.toLowerCase(),
       }).select('+refreshTokens');
       expect(dbUser?.refreshTokens).toHaveLength(0);
+    });
+
+    it('should set HttpOnly refresh token cookie and allow cookie-based refresh', async () => {
+      const registerRes = await request(app)
+        .post('/api/v1/auth/register')
+        .send({
+          firstName: 'Cookie',
+          lastName: 'Tester',
+          email: 'cookie.tester@example.com',
+          password: 'Password123!',
+          passwordConfirm: 'Password123!',
+        });
+
+      expect(registerRes.statusCode).toBe(201);
+      const setCookieHeaders = registerRes.headers['set-cookie'];
+      expect(setCookieHeaders).toBeDefined();
+      const cookieHeader = (setCookieHeaders as unknown as string[]).find((c) =>
+        c.startsWith('refreshToken=')
+      );
+      expect(cookieHeader).toBeDefined();
+      expect(cookieHeader).toMatch(/HttpOnly/i);
+
+      const cookieVal = cookieHeader!.split(';')[0];
+
+      // Refresh using Cookie header without request body
+      const refreshRes = await request(app)
+        .post('/api/v1/auth/refresh-token')
+        .set('Cookie', cookieVal);
+
+      expect(refreshRes.statusCode).toBe(200);
+      expect(refreshRes.body.status).toBe('success');
+      expect(refreshRes.body.data.tokens).toHaveProperty('accessToken');
     });
   });
 

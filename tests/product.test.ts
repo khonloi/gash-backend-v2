@@ -102,6 +102,31 @@ describe('Product API Integration Tests', () => {
       expect(res.body.data.product.discountPercentage).toBe(20);
     });
 
+    it('should automatically append numeric suffix to slug on duplicate name', async () => {
+      const res1 = await request(app)
+        .post('/api/v1/products')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send(sampleProductData);
+
+      expect(res1.statusCode).toBe(201);
+      expect(res1.body.data.product.slug).toBe(
+        'wireless-noise-canceling-headphones'
+      );
+
+      const res2 = await request(app)
+        .post('/api/v1/products')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({
+          ...sampleProductData,
+          sku: 'TECH-HEADPHONE-002',
+        });
+
+      expect(res2.statusCode).toBe(201);
+      expect(res2.body.data.product.slug).toBe(
+        'wireless-noise-canceling-headphones-1'
+      );
+    });
+
     it('should fail with 400 when required fields are missing', async () => {
       const res = await request(app)
         .post('/api/v1/products')

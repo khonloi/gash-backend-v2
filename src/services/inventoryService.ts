@@ -19,10 +19,12 @@ export interface InventoryItemToRestore {
 export class InventoryService {
   /**
    * Atomically checks stock and decrements inventory for an order with automated rollback if any item fails.
+   * Supports native MongoDB ClientSession for ACID transactions, or fallback Saga compensation.
    * Returns populated order item snapshots.
    */
   async processOrderItems(
-    items: ProcessOrderItemInput[]
+    items: ProcessOrderItemInput[],
+    session?: mongoose.ClientSession
   ): Promise<IOrderItem[]> {
     const orderItems: IOrderItem[] = [];
     const decremented: Array<{
@@ -42,11 +44,13 @@ export class InventoryService {
             quantity: { $gte: item.quantity },
           },
           { $inc: { quantity: -item.quantity } },
-          { returnDocument: 'after' }
+          { returnDocument: 'after', ...(session ? { session } : {}) }
         );
 
         if (!product) {
-          const existing = await Product.findById(item.productId);
+          const existing = await Product.findById(item.productId, null, {
+            ...(session ? { session } : {}),
+          });
           if (!existing) {
             throw new AppError(
               `Product with ID "${item.productId}" was not found`,
@@ -87,11 +91,13 @@ export class InventoryService {
         });
       }
     } catch (error) {
-      // Rollback any successfully decremented products on failure
-      for (const dec of decremented) {
-        await Product.findByIdAndUpdate(dec.productId, {
-          $inc: { quantity: dec.quantity },
-        });
+      // If not running within an ACID transaction session, manually rollback decrements (Saga)
+      if (!session) {
+        for (const dec of decremented) {
+          await Product.findByIdAndUpdate(dec.productId, {
+            $inc: { quantity: dec.quantity },
+          });
+        }
       }
       throw error;
     }
@@ -102,16 +108,21 @@ export class InventoryService {
   /**
    * Restores inventory quantities for cancelled orders or refunded items.
    */
-  async restoreInventory(items: InventoryItemToRestore[]): Promise<void> {
+  async restoreInventory(
+    items: InventoryItemToRestore[],
+    session?: mongoose.ClientSession
+  ): Promise<void> {
     for (const item of items) {
       const productId =
         typeof item.product === 'object' && '_id' in item.product
           ? item.product._id
           : item.product;
 
-      await Product.findByIdAndUpdate(productId, {
-        $inc: { quantity: item.quantity },
-      });
+      await Product.findByIdAndUpdate(
+        productId,
+        { $inc: { quantity: item.quantity } },
+        { ...(session ? { session } : {}) }
+      );
     }
   }
 }

@@ -3,6 +3,7 @@ import { Order } from '../models/Order.js';
 import { Cart } from '../models/Cart.js';
 import {
   IOrder,
+  IOrderItem,
   OrderStatus,
   PaymentStatus,
   PaginatedResult,
@@ -58,48 +59,118 @@ export class OrderService {
       throw new AppError('Order must contain at least one item', 400);
     }
 
-    // 2) Validate stock and deduct inventory with automated rollback tracking via InventoryService
+    // Helper to calculate totals with 2-decimal rounding
+    const calculateTotals = (items: IOrderItem[]) => {
+      const subtotal =
+        Math.round(
+          (items.reduce((sum, item) => sum + item.price * item.quantity, 0) +
+            Number.EPSILON) *
+            100
+        ) / 100;
+      const shippingFee =
+        data.shippingMethod === 'express'
+          ? SHIPPING_FEES.EXPRESS
+          : SHIPPING_FEES.STANDARD;
+      const total =
+        Math.round((subtotal + shippingFee + Number.EPSILON) * 100) / 100;
+      return { subtotal, shippingFee, total };
+    };
+
+    const buildOrderPayload = (
+      items: IOrderItem[],
+      totals: ReturnType<typeof calculateTotals>
+    ) => ({
+      user: userId,
+      items,
+      shippingAddress: data.shippingAddress,
+      shippingMethod: data.shippingMethod,
+      shippingFee: totals.shippingFee,
+      subtotal: totals.subtotal,
+      total: totals.total,
+      paymentMethod: data.paymentMethod,
+      paymentStatus: 'pending' as const,
+      status: 'pending' as const,
+      contactEmail: data.contactEmail || undefined,
+      contactPhone: data.contactPhone || undefined,
+      notes: data.notes,
+    });
+
+    // 2) Attempt multi-document ACID transaction if MongoDB topology is a replica set / sharded cluster
+    let order: IOrder | undefined;
+
+    const topologyType = (
+      mongoose.connection.getClient() as unknown as {
+        topology?: { description?: { type?: string } };
+      }
+    )?.topology?.description?.type;
+
+    const supportsTransactions =
+      topologyType === 'ReplicaSetWithPrimary' ||
+      topologyType === 'Sharded' ||
+      topologyType === 'LoadBalanced';
+
+    if (supportsTransactions) {
+      let session: mongoose.ClientSession | null = null;
+      try {
+        session = await mongoose.startSession();
+        await session.withTransaction(async () => {
+          const orderItems = await inventoryService.processOrderItems(
+            itemsToProcess,
+            session!
+          );
+          const totals = calculateTotals(orderItems);
+          const [createdOrder] = await Order.create(
+            [buildOrderPayload(orderItems, totals)],
+            { session: session! }
+          );
+          order = createdOrder;
+
+          if (userId) {
+            await Cart.findOneAndUpdate(
+              { user: userId },
+              { items: [] },
+              { session: session! }
+            );
+          }
+        });
+      } catch (err: unknown) {
+        const errorMsg = (err as Error)?.message || '';
+        const isStandaloneUnsupported =
+          errorMsg.includes('replica set') ||
+          errorMsg.includes('Transaction numbers are only allowed') ||
+          errorMsg.includes('retryable writes') ||
+          errorMsg.includes('retryable write') ||
+          errorMsg.includes('standalone') ||
+          (err as { codeName?: string })?.codeName === 'IllegalOperation';
+
+        if (!isStandaloneUnsupported) {
+          // Validation error or stock error inside transaction
+          throw err;
+        }
+        // Fall back to Saga pattern below if transaction unsupported
+        order = undefined;
+      } finally {
+        if (session) {
+          await session.endSession();
+        }
+      }
+    }
+
+    if (order) {
+      return order;
+    }
+
+    // 3) Fallback: Saga compensation pattern for standalone MongoDB instances
     const orderItems = await inventoryService.processOrderItems(itemsToProcess);
+    const totals = calculateTotals(orderItems);
 
-    // 3) Calculate totals with 2-decimal rounding
-    const subtotal =
-      Math.round(
-        (orderItems.reduce((sum, item) => sum + item.price * item.quantity, 0) +
-          Number.EPSILON) *
-          100
-      ) / 100;
-    const shippingFee =
-      data.shippingMethod === 'express'
-        ? SHIPPING_FEES.EXPRESS
-        : SHIPPING_FEES.STANDARD;
-    const total =
-      Math.round((subtotal + shippingFee + Number.EPSILON) * 100) / 100;
-
-    let order: IOrder;
     try {
-      // 4) Create Order
-      order = await Order.create({
-        user: userId,
-        items: orderItems,
-        shippingAddress: data.shippingAddress,
-        shippingMethod: data.shippingMethod,
-        shippingFee,
-        subtotal,
-        total,
-        paymentMethod: data.paymentMethod,
-        paymentStatus: 'pending',
-        status: 'pending',
-        contactEmail: data.contactEmail || undefined,
-        contactPhone: data.contactPhone || undefined,
-        notes: data.notes,
-      });
+      order = await Order.create(buildOrderPayload(orderItems, totals));
 
-      // 5) Clear user's active cart after order placement if user is logged in
       if (userId) {
         await Cart.findOneAndUpdate({ user: userId }, { items: [] });
       }
     } catch (createErr) {
-      // Compensation: restore decremented inventory if Order.create or subsequent steps fail
       try {
         await inventoryService.restoreInventory(orderItems);
       } catch (restoreErr) {

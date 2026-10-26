@@ -49,9 +49,9 @@
     "jsonwebtoken": "^9.0.3",
     "mongoose": "^9.10.0",
     "morgan": "^1.12.1",
-    "multer": "^2.4.0",
+    "multer": "^2.5.0",
     "winston": "^3.19.0",
-    "zod": "^4.6.4"
+    "zod": "^4.6.6"
   },
   "devDependencies": {
     "@types/compression": "^1.8.1",

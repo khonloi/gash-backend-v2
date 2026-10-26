@@ -17,6 +17,7 @@ import {
 
 import {
   REFRESH_TOKEN_EXPIRES_MS,
+  REFRESH_TOKEN_GRACE_PERIOD_MS,
   MAX_ACTIVE_REFRESH_TOKENS,
 } from '../config/constants.js';
 import { toSafeUser, type ISafeUser } from '../utils/sanitize.js';
@@ -54,8 +55,11 @@ export async function issueTokensAndSave(
   if (resetExisting) {
     user.refreshTokens = [newToken];
   } else {
+    const graceCutoff = new Date(Date.now() - REFRESH_TOKEN_GRACE_PERIOD_MS);
     const activeTokens = (user.refreshTokens || []).filter(
-      (rt) => rt.expiresAt > new Date()
+      (rt) =>
+        rt.expiresAt > new Date() &&
+        (!rt.revokedAt || rt.revokedAt > graceCutoff)
     );
     activeTokens.push(newToken);
     if (activeTokens.length > MAX_ACTIVE_REFRESH_TOKENS) {
@@ -123,7 +127,7 @@ export class AuthService {
   }
 
   /**
-   * Rotate refresh token and issue new token pair
+   * Rotate refresh token and issue new token pair with concurrency grace period
    */
   async refreshAccessToken(refreshToken: string): Promise<AuthTokens> {
     const decoded = verifyToken(refreshToken);
@@ -148,32 +152,12 @@ export class AuthService {
     }
 
     const hashedIncomingToken = createTokenHash(refreshToken);
-
-    // Issue new pair
-    const newAccessToken = signAccessToken(user._id.toString(), user.role);
-    const newRefreshToken = signRefreshToken(user._id.toString());
-    const hashedNewToken = createTokenHash(newRefreshToken);
-    const expiresAt = new Date(Date.now() + REFRESH_TOKEN_EXPIRES_MS);
-
-    // Atomically rotate: replace incoming token with new token in a single atomic operation
-    const updatedUser = await User.findOneAndUpdate(
-      {
-        _id: user._id,
-        isActive: true,
-        'refreshTokens.token': hashedIncomingToken,
-      },
-      {
-        $set: {
-          'refreshTokens.$.token': hashedNewToken,
-          'refreshTokens.$.expiresAt': expiresAt,
-          'refreshTokens.$.createdAt': new Date(),
-        },
-      },
-      { returnDocument: 'after' }
+    const existingToken = (user.refreshTokens || []).find(
+      (rt) => rt.token === hashedIncomingToken
     );
 
-    if (!updatedUser) {
-      // Reuse detection: clear all sessions if unknown or already rotated token is provided
+    if (!existingToken) {
+      // Reuse detection: clear all sessions if unknown or unrecorded token is provided
       await User.findByIdAndUpdate(user._id, { $set: { refreshTokens: [] } });
       throw new AppError(
         'Invalid or reused refresh token. All sessions terminated.',
@@ -181,10 +165,92 @@ export class AuthService {
       );
     }
 
-    // Clean up any expired tokens
-    await User.findByIdAndUpdate(user._id, {
-      $pull: { refreshTokens: { expiresAt: { $lte: new Date() } } },
+    // Check if token was already revoked
+    if (existingToken.revokedAt) {
+      const revokedTime = new Date(existingToken.revokedAt).getTime();
+      const elapsed = Date.now() - revokedTime;
+
+      if (elapsed <= REFRESH_TOKEN_GRACE_PERIOD_MS) {
+        // Within grace window (concurrent requests or network retry from another tab):
+        // Issue fresh token pair for this tab without wiping other sessions
+        const newAccessToken = signAccessToken(user._id.toString(), user.role);
+        const newRefreshToken = signRefreshToken(user._id.toString());
+        const hashedNewToken = createTokenHash(newRefreshToken);
+        const expiresAt = new Date(Date.now() + REFRESH_TOKEN_EXPIRES_MS);
+
+        user.refreshTokens.push({
+          token: hashedNewToken,
+          expiresAt,
+          createdAt: new Date(),
+        });
+
+        const graceCutoff = new Date(
+          Date.now() - REFRESH_TOKEN_GRACE_PERIOD_MS
+        );
+        user.refreshTokens = user.refreshTokens.filter(
+          (rt) =>
+            rt.expiresAt > new Date() &&
+            (!rt.revokedAt || rt.revokedAt > graceCutoff)
+        );
+
+        if (user.refreshTokens.length > MAX_ACTIVE_REFRESH_TOKENS) {
+          user.refreshTokens.shift();
+        }
+
+        await user.save();
+
+        return {
+          accessToken: newAccessToken,
+          refreshToken: newRefreshToken,
+        };
+      } else {
+        // Reused after the grace window! Malicious token reuse detected:
+        await User.findByIdAndUpdate(user._id, { $set: { refreshTokens: [] } });
+        throw new AppError(
+          'Invalid or reused refresh token. All sessions terminated.',
+          401
+        );
+      }
+    }
+
+    // Token is found and active (!existingToken.revokedAt)
+    if (existingToken.expiresAt <= new Date()) {
+      throw new AppError(
+        'Refresh token has expired. Please log in again.',
+        401
+      );
+    }
+
+    // Issue new pair
+    const newAccessToken = signAccessToken(user._id.toString(), user.role);
+    const newRefreshToken = signRefreshToken(user._id.toString());
+    const hashedNewToken = createTokenHash(newRefreshToken);
+    const expiresAt = new Date(Date.now() + REFRESH_TOKEN_EXPIRES_MS);
+
+    // Mark current token as revoked and track replacement
+    existingToken.revokedAt = new Date();
+    existingToken.replacedByToken = hashedNewToken;
+
+    // Add new active token
+    user.refreshTokens.push({
+      token: hashedNewToken,
+      expiresAt,
+      createdAt: new Date(),
     });
+
+    // Clean up expired tokens and revoked tokens older than grace period
+    const graceCutoff = new Date(Date.now() - REFRESH_TOKEN_GRACE_PERIOD_MS);
+    user.refreshTokens = user.refreshTokens.filter(
+      (rt) =>
+        rt.expiresAt > new Date() &&
+        (!rt.revokedAt || rt.revokedAt > graceCutoff)
+    );
+
+    if (user.refreshTokens.length > MAX_ACTIVE_REFRESH_TOKENS) {
+      user.refreshTokens.shift();
+    }
+
+    await user.save();
 
     return {
       accessToken: newAccessToken,

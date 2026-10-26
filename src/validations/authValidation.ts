@@ -51,11 +51,15 @@ export const loginSchema = z.object({
     .min(1, 'Password cannot be empty'),
 });
 
-export const refreshTokenSchema = z.object({
-  refreshToken: z
-    .string({ message: 'Refresh token is required' })
-    .min(1, 'Refresh token cannot be empty'),
-});
+export const refreshTokenSchema = z
+  .object({
+    refreshToken: z
+      .string({ message: 'Refresh token is required' })
+      .min(1, 'Refresh token cannot be empty')
+      .optional(),
+  })
+  .optional()
+  .default({});
 
 export const forgotPasswordSchema = z.object({
   email: z

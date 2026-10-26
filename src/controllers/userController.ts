@@ -100,7 +100,10 @@ export const updateUserRole = catchAsync(
 
 export const deleteUser = catchAsync(
   async (req: Request, res: Response): Promise<void> => {
-    await userService.deleteUser(req.params.id as string);
+    await userService.deleteUser(
+      req.params.id as string,
+      req.user?._id?.toString()
+    );
     sendSuccess(res, null, 204);
   }
 );

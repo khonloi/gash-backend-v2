@@ -3,6 +3,7 @@ import mongoose from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import app from '../src/app.js';
 import { User } from '../src/models/User.js';
+import { Cart } from '../src/models/Cart.js';
 import { signAccessToken } from '../src/utils/jwt.js';
 import { IAddress } from '../src/types/index.js';
 
@@ -295,6 +296,33 @@ describe('User Profile & Admin Integration Tests', () => {
 
       const check = await User.findById(customerId);
       expect(check).toBeNull();
+    });
+
+    it('should prevent admin from deleting their own account', async () => {
+      const res = await request(app)
+        .delete(`/api/v1/users/${adminId}`)
+        .set('Authorization', `Bearer ${adminToken}`);
+
+      expect(res.statusCode).toBe(400);
+      expect(res.body.message).toMatch(/cannot delete their own account/i);
+
+      const check = await User.findById(adminId);
+      expect(check).not.toBeNull();
+    });
+
+    it('should cascade delete user cart when user is deleted', async () => {
+      await Cart.create({ user: customerId, items: [] });
+      const cartBefore = await Cart.findOne({ user: customerId });
+      expect(cartBefore).not.toBeNull();
+
+      const res = await request(app)
+        .delete(`/api/v1/users/${customerId}`)
+        .set('Authorization', `Bearer ${adminToken}`);
+
+      expect(res.statusCode).toBe(204);
+
+      const cartAfter = await Cart.findOne({ user: customerId });
+      expect(cartAfter).toBeNull();
     });
   });
 });
