@@ -22,6 +22,7 @@ tags:
   - name: Products
   - name: Cart
   - name: Orders
+  - name: Chat
 
 components:
   securitySchemes:
@@ -188,7 +189,8 @@ components:
       required: [shippingAddress]
       properties:
         shippingAddress: { $ref: '#/components/schemas/ShippingAddress' }
-        shippingMethod: { type: string, enum: [standard, express], default: standard }
+        shippingMethod:
+          { type: string, enum: [standard, express], default: standard }
         paymentMethod:
           type: string
           enum: [cod, credit_card, apple_pay, paypal, momo, vnpay]
@@ -217,7 +219,8 @@ components:
         subcategory: { type: string }
         brand: { type: string }
         tags: { type: array, items: { type: string } }
-        status: { type: string, enum: [draft, active, archived], default: draft }
+        status:
+          { type: string, enum: [draft, active, archived], default: draft }
         isFeatured: { type: boolean, default: false }
 
 paths:
@@ -481,16 +484,28 @@ paths:
         included) to anonymous callers. See audit finding N1.
       parameters:
         - { in: query, name: page, schema: { type: integer, default: 1 } }
-        - { in: query, name: limit, schema: { type: integer, default: 10, maximum: 100 } }
+        - {
+            in: query,
+            name: limit,
+            schema: { type: integer, default: 10, maximum: 100 },
+          }
         - { in: query, name: keyword, schema: { type: string } }
         - { in: query, name: category, schema: { type: string } }
         - { in: query, name: subcategory, schema: { type: string } }
         - { in: query, name: brand, schema: { type: string } }
-        - { in: query, name: status, schema: { type: string, enum: [draft, active, archived] } }
+        - {
+            in: query,
+            name: status,
+            schema: { type: string, enum: [draft, active, archived] },
+          }
         - { in: query, name: isFeatured, schema: { type: boolean } }
         - { in: query, name: minPrice, schema: { type: number } }
         - { in: query, name: maxPrice, schema: { type: number } }
-        - { in: query, name: sort, schema: { type: string, example: '-price,name' } }
+        - {
+            in: query,
+            name: sort,
+            schema: { type: string, example: '-price,name' },
+          }
         - { in: query, name: fields, schema: { type: string } }
       responses:
         '200':
@@ -584,7 +599,12 @@ paths:
               required: [quantity]
               properties:
                 quantity: { type: integer }
-                operation: { type: string, enum: [increment, decrement, set], default: set }
+                operation:
+                  {
+                    type: string,
+                    enum: [increment, decrement, set],
+                    default: set,
+                  }
       responses:
         '200': { description: OK. }
         '400': { description: Invalid quantity or insufficient stock. }
@@ -678,7 +698,8 @@ paths:
             schema: { $ref: '#/components/schemas/CreateOrderInput' }
       responses:
         '201': { description: Created. }
-        '400': { description: Validation error, empty cart or insufficient stock. }
+        '400':
+          { description: Validation error, empty cart or insufficient stock. }
         '429': { $ref: '#/components/responses/TooManyRequests' }
     get:
       tags: [Orders]
@@ -749,7 +770,16 @@ paths:
               properties:
                 status:
                   type: string
-                  enum: [pending, confirmed, processing, shipped, delivered, cancelled, refunded]
+                  enum:
+                    [
+                      pending,
+                      confirmed,
+                      processing,
+                      shipped,
+                      delivered,
+                      cancelled,
+                      refunded,
+                    ]
       responses:
         '200': { description: OK. }
         '400': { description: Invalid state transition. }
@@ -770,7 +800,206 @@ paths:
               type: object
               required: [paymentStatus]
               properties:
-                paymentStatus: { type: string, enum: [pending, paid, failed, refunded] }
+                paymentStatus:
+                  { type: string, enum: [pending, paid, failed, refunded] }
       responses:
         '200': { description: OK. }
         '403': { $ref: '#/components/responses/Forbidden' }
+
+  /chat/conversations:
+    post:
+      tags: [Chat]
+      summary: Start a new chat conversation (supports guest or authenticated user)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                subject: { type: string }
+                mode: { type: string, enum: [ai, support, seller], default: ai }
+                initialMessage: { type: string }
+                contextCards:
+                  type: array
+                  items:
+                    type: object
+                    required: [cardType]
+                    properties:
+                      cardType: { type: string, enum: [product, order] }
+                      productId: { type: string }
+                      orderId: { type: string }
+                      note: { type: string }
+      responses:
+        '201': { description: Conversation created. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    get:
+      tags: [Chat]
+      summary: List user/guest conversations or support queue
+      parameters:
+        - name: status
+          in: query
+          schema:
+            {
+              type: string,
+              enum: [bot_active, queued, assigned, resolved, closed],
+            }
+        - name: mode
+          in: query
+          schema: { type: string, enum: [ai, support, seller] }
+        - name: page
+          in: query
+          schema: { type: integer, default: 1 }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 30 }
+      responses:
+        '200': { description: Paginated conversation list. }
+
+  /chat/conversations/{id}:
+    get:
+      tags: [Chat]
+      summary: Get conversation details by ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: Conversation details. }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /chat/conversations/{id}/messages:
+    get:
+      tags: [Chat]
+      summary: Get paginated messages in conversation
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: page
+          in: query
+          schema: { type: integer, default: 1 }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 30 }
+      responses:
+        '200':
+          { description: Paginated message list with populated context cards. }
+    post:
+      tags: [Chat]
+      summary: Send message to conversation (triggers AI reply if in AI mode)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [content]
+              properties:
+                content: { type: string }
+                contextCards:
+                  type: array
+                  items:
+                    type: object
+                    required: [cardType]
+                    properties:
+                      cardType: { type: string, enum: [product, order] }
+                      productId: { type: string }
+                      orderId: { type: string }
+                      note: { type: string }
+      responses:
+        '201':
+          { description: Message created (and optional AI reply generated). }
+
+  /chat/conversations/{id}/handoff:
+    post:
+      tags: [Chat]
+      summary: Escalate conversation from AI to human live support queue
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: string }
+      responses:
+        '200': { description: Conversation escalated to queued status. }
+
+  /chat/conversations/{id}/assign:
+    patch:
+      tags: [Chat]
+      summary: Assign conversation to support agent/seller (admin/seller)
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: Conversation assigned. }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /chat/conversations/{id}/status:
+    patch:
+      tags: [Chat]
+      summary: Update conversation status (resolved, closed, etc.)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  {
+                    type: string,
+                    enum: [bot_active, queued, assigned, resolved, closed],
+                  }
+      responses:
+        '200': { description: Status updated. }
+
+  /chat/conversations/{id}/read:
+    patch:
+      tags: [Chat]
+      summary: Mark conversation messages as read
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: Marked as read. }
+
+  /chat/merge:
+    post:
+      tags: [Chat]
+      summary: Merge guest chat history into authenticated user account
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [guestId]
+              properties:
+                guestId: { type: string }
+      responses:
+        '200': { description: Guest conversations successfully merged. }

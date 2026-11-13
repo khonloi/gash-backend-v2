@@ -4,3 +4,4 @@ export * from './userValidation.js';
 export * from './productValidation.js';
 export * from './cartValidation.js';
 export * from './orderValidation.js';
+export * from './chatValidation.js';

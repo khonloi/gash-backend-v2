@@ -1,4 +1,5 @@
 import { OrderStatus } from '../types/order.js';
+import { ConversationStatus } from '../types/chat.js';
 
 /**
  * Security & Token Lifetimes (in milliseconds)
@@ -51,4 +52,32 @@ export const VALID_ORDER_STATUS_TRANSITIONS: Record<
   delivered: ['refunded'],
   cancelled: [],
   refunded: [],
+};
+
+/**
+ * Chat System Projections & Constants
+ */
+export const CHAT_PRODUCT_PROJECTION =
+  'name slug price compareAtPrice images category brand status quantity';
+
+export const CHAT_ORDER_PROJECTION =
+  'orderNumber status paymentStatus shippingMethod subtotal shippingFee total createdAt';
+
+export const CHAT_USER_PROJECTION = '_id firstName lastName avatar role email';
+
+export const MAX_CONTEXT_CARDS_PER_MESSAGE = 5;
+export const DEFAULT_CHAT_PAGE_LIMIT = 30;
+
+/**
+ * Valid Conversation Status Transitions
+ */
+export const VALID_CONVERSATION_STATUS_TRANSITIONS: Record<
+  ConversationStatus,
+  ConversationStatus[]
+> = {
+  bot_active: ['queued', 'closed', 'resolved'],
+  queued: ['assigned', 'closed', 'resolved', 'bot_active'],
+  assigned: ['resolved', 'closed', 'queued'],
+  resolved: ['queued', 'closed', 'bot_active'],
+  closed: ['queued', 'bot_active'],
 };

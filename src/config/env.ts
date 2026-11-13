@@ -22,6 +22,9 @@ const baseEnvSchema = z.object({
   BCRYPT_COST: z.coerce.number().min(4).max(16).default(12),
   FRONTEND_URL: z.string().default('http://localhost:3000'),
   ALLOWED_ORIGINS: z.string().optional(),
+  GEMINI_API_KEY: z.string().optional(),
+  GEMINI_MODEL: z.string().default('gemini-2.5-flash'),
+  CHAT_MAX_CONTEXT_MESSAGES: z.coerce.number().int().min(1).max(50).default(15),
 });
 
 const envSchema = baseEnvSchema.superRefine((data, ctx) => {

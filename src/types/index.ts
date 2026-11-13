@@ -87,6 +87,7 @@ export interface QueryString {
 
 export * from './user.js';
 export * from './order.js';
+export * from './chat.js';
 
 export interface ICartItem {
   _id?: mongoose.Types.ObjectId;

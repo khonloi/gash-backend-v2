@@ -18,11 +18,7 @@ export default {
   testTimeout: 30000,
   coveragePathIgnorePatterns: ['/node_modules/'],
 
-  collectCoverageFrom: [
-    'src/**/*.ts',
-    '!src/server.ts',
-    '!src/config/db.ts',
-  ],
+  collectCoverageFrom: ['src/**/*.ts', '!src/server.ts', '!src/config/db.ts'],
   coverageThreshold: {
     global: {
       branches: 80,

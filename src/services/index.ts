@@ -5,3 +5,5 @@ export * from './cartService.js';
 export * from './orderService.js';
 export * from './inventoryService.js';
 export * from './orderStateMachine.js';
+export * from './chatService.js';
+export * from './aiChatService.js';

@@ -36,7 +36,8 @@ An enterprise-grade, production-ready, industry-standard RESTful API backend eng
   - [4. Admin User Management (`/api/v1/users`)](#4-admin-user-management-apiv1users)
   - [5. Product Catalog & Inventory (`/api/v1/products`)](#5-product-catalog--inventory-apiv1products)
   - [6. Shopping Cart Management (`/api/v1/cart`)](#6-shopping-cart-management-apiv1cart)
-  - [7. System Health (`/api/v1/health`)](#7-system-health-apiv1health)
+  - [7. Hybrid Chatbox & Real-Time Support (`/api/v1/chat`)](#7-hybrid-chatbox--real-time-support-apiv1chat)
+  - [8. System Health (`/api/v1/health`)](#8-system-health-apiv1health)
 - [Error Handling & Observability](#error-handling--observability)
 - [Testing & Quality Assurance](#testing--quality-assurance)
 - [Production Deployment & Process Management](#production-deployment--process-management)
@@ -712,7 +713,45 @@ Content-Type: application/json
 
 ---
 
-### 7. System Health (`/api/v1/health`)
+### 7. Hybrid Chatbox & Real-Time Support (`/api/v1/chat`)
+
+_Supports dual transports: Socket.IO WebSocket (real-time chat, streaming, typing) and REST API (message history, guest merge, pagination)._
+
+| Method  | Endpoint                                  |    Access     | Description                                                              |
+| :------ | :---------------------------------------- | :-----------: | :----------------------------------------------------------------------- |
+| `POST`  | `/api/v1/chat/conversations`              | Public/Guest  | Start a conversation (defaults to AI Assistant mode)                     |
+| `GET`   | `/api/v1/chat/conversations`              | Public/Guest  | List conversations for caller, or support queue for `admin`/`seller`     |
+| `GET`   | `/api/v1/chat/conversations/:id`          | Conversation  | Get single conversation metadata and unread counts                       |
+| `GET`   | `/api/v1/chat/conversations/:id/messages` | Conversation  | Paginated messages with populated Product/Order cards                    |
+| `POST`  | `/api/v1/chat/conversations/:id/messages` | Conversation  | Send message (triggers AI reply if in `bot_active` mode)                 |
+| `POST`  | `/api/v1/chat/conversations/:id/handoff`  | Conversation  | Escalate AI conversation to live human support queue (`queued`)          |
+| `PATCH` | `/api/v1/chat/conversations/:id/assign`   | Admin/Seller  | Assign conversation to support agent                                     |
+| `PATCH` | `/api/v1/chat/conversations/:id/status`   | Conversation  | Update status (`bot_active`, `queued`, `assigned`, `resolved`, `closed`) |
+| `PATCH` | `/api/v1/chat/conversations/:id/read`     | Conversation  | Mark messages as read and reset unread counters                          |
+| `POST`  | `/api/v1/chat/merge`                      | Authenticated | Merge guest chat history into authenticated user account                 |
+
+#### Real-Time Socket.IO Events
+
+Connect to `ws://localhost:5000` with `auth: { token: "<jwt>" }` or `auth: { guestId: "<uuid>" }`:
+
+- **Client to Server**:
+  - `chat:join`: `{ conversationId }` — Join conversation room.
+  - `chat:send_message`: `{ conversationId, content, contextCards? }` — Send message over WebSocket.
+  - `chat:typing`: `{ conversationId, isTyping }` — Broadcast typing indicator.
+  - `chat:mark_read`: `{ conversationId }` — Mark unread messages read.
+  - `chat:handoff`: `{ conversationId, reason? }` — Escalate to live support.
+- **Server to Client**:
+  - `chat:message`: `{ conversationId, message }` — Broadcast newly posted message with context cards.
+  - `chat:ai_typing`: `{ conversationId, isTyping }` — AI assistant thinking indicator.
+  - `chat:ai_chunk`: `{ conversationId, chunk }` — Incremental AI response text streaming.
+  - `chat:typing`: `{ conversationId, senderRole, isTyping }` — Typing status update.
+  - `chat:read_receipt`: `{ conversationId, readerRole }` — Read receipt broadcast.
+  - `chat:handoff_occurred`: `{ conversationId, status, mode, reason }` — Escalation notification.
+  - `support:queue_updated`: `{ conversationId, mode, status }` — Real-time queue broadcast to online agents (`support:agents`).
+
+---
+
+### 8. System Health (`/api/v1/health`)
 
 | Method | Endpoint         | Access | Description                                       |
 | :----- | :--------------- | :----: | :------------------------------------------------ |

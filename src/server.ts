@@ -3,6 +3,7 @@ import { env } from './config/env.js';
 import app from './app.js';
 import { connectDB } from './config/db.js';
 import { logger } from './config/logger.js';
+import { initSocketServer, closeSocketServer } from './socket/index.js';
 
 process.on('uncaughtException', (err: Error) => {
   logger.error('UNCAUGHT EXCEPTION! Shutting down...');
@@ -22,6 +23,9 @@ if (env.MONGO_URI) {
 const server = app.listen(env.PORT, () => {
   logger.info(`Server running in ${env.NODE_ENV} mode on port ${env.PORT}`);
 });
+
+// Initialize Socket.IO server
+initSocketServer(server);
 
 process.on('unhandledRejection', (reason: unknown) => {
   logger.error('UNHANDLED REJECTION! Shutting down...');
@@ -52,6 +56,7 @@ const gracefulShutdown = async (signal: string) => {
   server.close(async () => {
     logger.info('HTTP server closed. All active requests completed.');
     try {
+      await closeSocketServer();
       if (mongoose.connection.readyState !== 0) {
         await mongoose.disconnect();
         logger.info('MongoDB connection closed.');

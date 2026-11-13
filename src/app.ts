@@ -17,6 +17,7 @@ import authRouter from './routes/authRoutes.js';
 import userRouter from './routes/userRoutes.js';
 import cartRouter from './routes/cartRoutes.js';
 import orderRouter from './routes/orderRoutes.js';
+import chatRouter from './routes/chatRoutes.js';
 
 const app: Application = express();
 
@@ -129,6 +130,15 @@ const orderCreateLimiter = rateLimit({
 });
 app.post('/api/v1/orders', orderCreateLimiter);
 
+// Rate limiting for chat messages
+const chatMessageLimiter = rateLimit({
+  max: 120,
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  message: 'Too many chat messages sent, please slow down!',
+  skip: () => env.NODE_ENV === 'test',
+});
+app.post('/api/v1/chat/conversations/:id/messages', chatMessageLimiter);
+
 // Body parser, reading data from body into req.body
 app.use(express.json({ limit: '10kb' }));
 app.use(express.urlencoded({ extended: true, limit: '10kb' }));
@@ -150,6 +160,8 @@ app.use(
       'isFeatured',
       'tags',
       'role',
+      'mode',
+      'assignedAgent',
     ],
   })
 );
@@ -179,6 +191,7 @@ app.use(
       'Authorization',
       'X-Requested-With',
       'X-Request-Id',
+      'x-guest-id',
     ],
     exposedHeaders: ['X-Request-Id'],
   })
@@ -190,6 +203,7 @@ app.use('/api/v1/users', userRouter);
 app.use('/api/v1/products', productRouter);
 app.use('/api/v1/cart', cartRouter);
 app.use('/api/v1/orders', orderRouter);
+app.use('/api/v1/chat', chatRouter);
 
 // Health check and readiness endpoints
 app.get('/api/v1/health', healthCheck);
