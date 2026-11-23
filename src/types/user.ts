@@ -17,11 +17,15 @@ export interface IAddress {
 }
 
 export interface IRefreshToken {
-  token: string;
+  user: Types.ObjectId;
+  tokenHash: string;
+  familyId: string;
   expiresAt: Date;
   createdAt: Date;
   revokedAt?: Date | null;
-  replacedByToken?: string | null;
+  revokedReason?: 'rotated' | 'logout' | 'evicted' | 'security' | null;
+  replacedByTokenHash?: string | null;
+  graceConsumed?: boolean;
 }
 
 export interface IUser extends Document {
@@ -39,7 +43,7 @@ export interface IUser extends Document {
   passwordResetToken?: string;
   passwordResetExpires?: Date;
   passwordChangedAt?: Date;
-  refreshTokens: IRefreshToken[];
+  tokenVersion: number;
   addresses: IAddress[];
   createdAt: Date;
   updatedAt: Date;
@@ -56,6 +60,7 @@ export interface TokenPayload {
   role?: UserRole;
   type?: 'access' | 'refresh';
   jti?: string;
+  tokenVersion?: number;
   iat?: number;
   exp?: number;
 }

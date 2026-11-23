@@ -22,11 +22,26 @@ export const addressIdParamSchema = z.object({
 });
 
 export const paginationQuerySchema = z.object({
-  page: z.coerce.number().int().min(1).default(1),
+  page: z.coerce.number().int().min(1).max(1000).default(1),
   limit: z.coerce.number().int().min(1).max(100).default(10),
-  sort: z.string().optional(),
-  fields: z.string().optional(),
+  sort: z.string().max(200).optional(),
+  fields: z.string().max(500).optional(),
 });
+
+export const booleanQuerySchema = z
+  .union([z.boolean(), z.enum(['true', 'false', '1', '0'])])
+  .transform((val) => val === true || val === 'true' || val === '1');
+
+export const numericComparisonFilterSchema = z.union([
+  z.coerce.number(),
+  z.object({
+    gte: z.coerce.number().optional(),
+    gt: z.coerce.number().optional(),
+    lte: z.coerce.number().optional(),
+    lt: z.coerce.number().optional(),
+    ne: z.coerce.number().optional(),
+  }),
+]);
 
 export type PaginationQueryInput = z.infer<typeof paginationQuerySchema>;
 export type IdParamInput = z.infer<typeof idParamSchema>;

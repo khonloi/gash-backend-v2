@@ -1,14 +1,15 @@
 import { z } from 'zod';
 
 const passwordRegex =
-  /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$/;
+  /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9\s]).{8,72}$/;
 
 const passwordValidation = z
   .string({ message: 'Password is required' })
   .min(8, 'Password must be at least 8 characters')
+  .max(72, 'Password cannot exceed 72 characters')
   .regex(
     passwordRegex,
-    'Password must contain at least one uppercase letter, one lowercase letter, one number, and one special character (@$!%*?&)'
+    'Password must contain at least one uppercase letter, one lowercase letter, one number, and one special character'
   );
 
 const passwordConfirmationFields = {
@@ -48,18 +49,9 @@ export const loginSchema = z.object({
     .toLowerCase(),
   password: z
     .string({ message: 'Password is required' })
-    .min(1, 'Password cannot be empty'),
+    .min(1, 'Password cannot be empty')
+    .max(72, 'Password cannot exceed 72 characters'),
 });
-
-export const refreshTokenSchema = z
-  .object({
-    refreshToken: z
-      .string({ message: 'Refresh token is required' })
-      .min(1, 'Refresh token cannot be empty')
-      .optional(),
-  })
-  .optional()
-  .default({});
 
 export const forgotPasswordSchema = z.object({
   email: z
@@ -70,11 +62,26 @@ export const forgotPasswordSchema = z.object({
 });
 
 export const resetPasswordSchema = z
-  .object(passwordConfirmationFields)
+  .object({
+    token: z
+      .string({ message: 'Reset token is required' })
+      .trim()
+      .min(1, 'Reset token cannot be empty')
+      .max(256, 'Invalid reset token'),
+    ...passwordConfirmationFields,
+  })
   .refine((data) => data.password === data.passwordConfirm, {
     message: 'Passwords do not match',
     path: ['passwordConfirm'],
   });
+
+export const verifyEmailSchema = z.object({
+  token: z
+    .string({ message: 'Verification token is required' })
+    .trim()
+    .min(1, 'Verification token cannot be empty')
+    .max(256, 'Invalid verification token'),
+});
 
 export const changePasswordSchema = z
   .object({
@@ -97,7 +104,7 @@ export const changePasswordSchema = z
 
 export type RegisterInput = z.infer<typeof registerSchema>;
 export type LoginInput = z.infer<typeof loginSchema>;
-export type RefreshTokenInput = z.infer<typeof refreshTokenSchema>;
 export type ForgotPasswordInput = z.infer<typeof forgotPasswordSchema>;
 export type ResetPasswordInput = z.infer<typeof resetPasswordSchema>;
+export type VerifyEmailInput = z.infer<typeof verifyEmailSchema>;
 export type ChangePasswordInput = z.infer<typeof changePasswordSchema>;

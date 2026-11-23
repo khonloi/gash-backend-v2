@@ -23,6 +23,8 @@ const app: Application = express();
 
 // Trust first proxy (e.g. reverse proxy, load balancer, Vercel)
 app.set('trust proxy', 1);
+// Use extended query parser so bracket operators like ?price[gte]=50 parse into nested objects
+app.set('query parser', 'extended');
 
 // Assign correlation ID to all requests
 app.use(requestId);
@@ -69,16 +71,51 @@ app.use(
 );
 
 // Request logging
+morgan.token('id', (req) => (req as Request).id || '-');
 if (env.NODE_ENV === 'development') {
   app.use(morgan('dev'));
 } else if (env.NODE_ENV === 'production') {
   app.use(
-    morgan('combined', {
-      stream: { write: (msg: string) => logger.info(msg.trim()) },
-      skip: (req) => req.url === '/health' || req.url === '/api/v1/health',
-    })
+    morgan(
+      ':method :url :status :res[content-length] - :response-time ms [reqId=:id]',
+      {
+        stream: { write: (msg: string) => logger.info(msg.trim()) },
+        skip: (req) => req.url === '/health' || req.url === '/api/v1/health',
+      }
+    )
   );
 }
+
+// Implement CORS before rate limiters so preflight and 429/4xx responses include CORS headers
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      if (!origin || allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+      if (env.NODE_ENV !== 'production') {
+        logger.warn(
+          `CORS: Origin '${origin}' allowed in development mode but not in whitelist`
+        );
+        return callback(null, true);
+      }
+      return callback(
+        new AppError(`Origin ${origin} not allowed by CORS`, 403)
+      );
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: [
+      'Content-Type',
+      'Authorization',
+      'X-Requested-With',
+      'X-Request-Id',
+      'x-guest-id',
+      'x-guest-token',
+    ],
+    exposedHeaders: ['X-Request-Id'],
+  })
+);
 
 // Limit requests from same API
 const limiter = rateLimit({
@@ -100,7 +137,7 @@ const authLimiter = rateLimit({
 app.use('/api/v1/auth/login', authLimiter);
 app.use('/api/v1/auth/register', authLimiter);
 
-// Specific rate limiting for password reset requests
+// Specific rate limiting for password reset & email verification requests
 const passwordResetLimiter = rateLimit({
   max: 5,
   windowMs: 15 * 60 * 1000, // 15 minutes
@@ -110,6 +147,15 @@ const passwordResetLimiter = rateLimit({
 });
 app.use('/api/v1/auth/forgot-password', passwordResetLimiter);
 app.use('/api/v1/auth/reset-password', passwordResetLimiter);
+
+const verifyEmailLimiter = rateLimit({
+  max: 10,
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  message:
+    'Too many email verification attempts from this IP, please try again in 15 minutes!',
+  skip: () => env.NODE_ENV === 'test',
+});
+app.use('/api/v1/auth/verify-email', verifyEmailLimiter);
 
 // Rate limiting for token refresh
 const refreshLimiter = rateLimit({
@@ -130,7 +176,7 @@ const orderCreateLimiter = rateLimit({
 });
 app.post('/api/v1/orders', orderCreateLimiter);
 
-// Rate limiting for chat messages
+// Rate limiting for chat endpoints
 const chatMessageLimiter = rateLimit({
   max: 120,
   windowMs: 15 * 60 * 1000, // 15 minutes
@@ -138,6 +184,17 @@ const chatMessageLimiter = rateLimit({
   skip: () => env.NODE_ENV === 'test',
 });
 app.post('/api/v1/chat/conversations/:id/messages', chatMessageLimiter);
+
+const chatSessionLimiter = rateLimit({
+  max: 30,
+  windowMs: 15 * 60 * 1000,
+  message: 'Too many chat session requests, please slow down!',
+  skip: () => env.NODE_ENV === 'test',
+});
+app.post('/api/v1/chat/guest-session', chatSessionLimiter);
+app.post('/api/v1/chat/conversations', chatSessionLimiter);
+app.post('/api/v1/chat/conversations/:id/handoff', chatSessionLimiter);
+app.post('/api/v1/chat/merge', chatSessionLimiter);
 
 // Body parser, reading data from body into req.body
 app.use(express.json({ limit: '10kb' }));
@@ -168,34 +225,6 @@ app.use(
 
 // Compress responses
 app.use(compression());
-
-// Implement CORS
-app.use(
-  cors({
-    origin: (origin, callback) => {
-      if (!origin || allowedOrigins.includes(origin)) {
-        return callback(null, true);
-      }
-      if (env.NODE_ENV !== 'production') {
-        logger.warn(
-          `CORS: Origin '${origin}' allowed in development mode but not in whitelist`
-        );
-        return callback(null, true);
-      }
-      return callback(new Error(`Origin ${origin} not allowed by CORS`));
-    },
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: [
-      'Content-Type',
-      'Authorization',
-      'X-Requested-With',
-      'X-Request-Id',
-      'x-guest-id',
-    ],
-    exposedHeaders: ['X-Request-Id'],
-  })
-);
 
 // Routes setup
 app.use('/api/v1/auth', authRouter);

@@ -1,6 +1,6 @@
 import mongoose, { Schema, Model } from 'mongoose';
 import bcrypt from 'bcryptjs';
-import { IUser, IAddress, IRefreshToken } from '../types/index.js';
+import { IUser, IAddress } from '../types/index.js';
 import { createTokenHash, generateRandomToken } from '../utils/crypto.js';
 import {
   PASSWORD_RESET_EXPIRES_MS,
@@ -19,32 +19,6 @@ const addressSchema = new Schema<IAddress>(
     fullNameRequiredMessage: 'Full name for address is required',
   }),
   { _id: true }
-);
-
-const refreshTokenSchema = new Schema<IRefreshToken>(
-  {
-    token: {
-      type: String,
-      required: true,
-    },
-    expiresAt: {
-      type: Date,
-      required: true,
-    },
-    createdAt: {
-      type: Date,
-      default: Date.now,
-    },
-    revokedAt: {
-      type: Date,
-      default: null,
-    },
-    replacedByToken: {
-      type: String,
-      default: null,
-    },
-  },
-  { _id: false }
 );
 
 const userSchema = new Schema<IUser>(
@@ -68,7 +42,7 @@ const userSchema = new Schema<IUser>(
       lowercase: true,
       trim: true,
       match: [
-        /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/,
+        /^[^\s@]+@[^\s@]+\.[^\s@]+$/,
         'Please provide a valid email address',
       ],
     },
@@ -117,10 +91,11 @@ const userSchema = new Schema<IUser>(
     },
     passwordChangedAt: {
       type: Date,
+      select: false,
     },
-    refreshTokens: {
-      type: [refreshTokenSchema],
-      default: [],
+    tokenVersion: {
+      type: Number,
+      default: 0,
       select: false,
     },
     addresses: {
@@ -130,15 +105,32 @@ const userSchema = new Schema<IUser>(
   },
   {
     timestamps: true,
-    toJSON: { virtuals: true },
+    toJSON: {
+      virtuals: true,
+      transform: (_doc, ret) => {
+        const obj = ret as unknown as Record<string, unknown>;
+        delete obj.password;
+        delete obj.emailVerificationToken;
+        delete obj.emailVerificationExpires;
+        delete obj.passwordResetToken;
+        delete obj.passwordResetExpires;
+        delete obj.passwordChangedAt;
+        delete obj.tokenVersion;
+        delete obj.__v;
+        return ret;
+      },
+    },
     toObject: { virtuals: true },
   }
 );
 
 // Indexes (email unique index is defined on field)
 userSchema.index({ role: 1 });
+userSchema.index({ isActive: 1, createdAt: -1 });
+userSchema.index({ createdAt: -1 });
 userSchema.index({ passwordResetToken: 1 }, { sparse: true });
 userSchema.index({ emailVerificationToken: 1 }, { sparse: true });
+userSchema.index({ firstName: 'text', lastName: 'text', email: 'text' });
 
 // Pre-save hook: Hash password if modified
 userSchema.pre('save', async function () {

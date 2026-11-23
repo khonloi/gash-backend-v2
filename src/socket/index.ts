@@ -1,9 +1,22 @@
 import { Server as HttpServer } from 'http';
 import { Server as SocketIOServer } from 'socket.io';
-import { socketAuthMiddleware, AuthenticatedSocket } from './socketAuth.js';
+import {
+  socketAuthMiddleware,
+  AuthenticatedSocket,
+  SocketData,
+} from './socketAuth.js';
 import { registerChatHandlers } from './chatHandler.js';
 import { env } from '../config/env.js';
 import { logger } from '../config/logger.js';
+import { maskGuestId } from '../utils/guestToken.js';
+import { resolveOwnerId } from '../utils/resolveOwnerId.js';
+
+export type TypedIOServer = SocketIOServer<
+  Record<string, (...args: never[]) => void>,
+  Record<string, (...args: never[]) => void>,
+  Record<string, never>,
+  SocketData
+>;
 
 let io: SocketIOServer | null = null;
 
@@ -36,6 +49,7 @@ export const initSocketServer = (httpServer: HttpServer): SocketIOServer => {
   const allowedOrigins = getAllowedOrigins();
 
   io = new SocketIOServer(httpServer, {
+    maxHttpBufferSize: 16 * 1024, // 16 KB max WebSocket frame payload
     cors: {
       origin: (origin, callback) => {
         if (!origin || allowedOrigins.includes(origin)) {
@@ -56,7 +70,7 @@ export const initSocketServer = (httpServer: HttpServer): SocketIOServer => {
 
   io.on('connection', (socket) => {
     logger.info(
-      `Socket connected: id=${socket.id}, role=${socket.data.role}, userId=${socket.data.userId || 'none'}, guestId=${socket.data.guestId || 'none'}`
+      `Socket connected: id=${socket.id}, role=${socket.data.role}, userId=${socket.data.userId || 'none'}, guest=${maskGuestId(socket.data.guestId)}`
     );
 
     registerChatHandlers(io!, socket as AuthenticatedSocket);
@@ -87,6 +101,8 @@ export const emitToConversationParticipants = (
     _id: unknown;
     user?: unknown;
     guestId?: string | null;
+    status?: string;
+    mode?: string;
   },
   event: string,
   payload: unknown
@@ -94,16 +110,18 @@ export const emitToConversationParticipants = (
   if (!io) return;
 
   const convId = String(conversation._id);
-  let target = io.to(`conversation:${convId}`).to('support:agents');
+  let target = io.to(`conversation:${convId}`);
 
-  if (conversation.user) {
-    const rawUser = conversation.user as { _id?: unknown };
-    const userId = rawUser._id
-      ? String(rawUser._id)
-      : String(conversation.user);
-    if (userId) {
-      target = target.to(`user:${userId}`);
-    }
+  // Keep private bot_active AI chats isolated from support:agents
+  if (conversation.status !== 'bot_active') {
+    target = target.to('support:agents');
+  }
+
+  const userId = resolveOwnerId(
+    conversation.user as Parameters<typeof resolveOwnerId>[0]
+  );
+  if (userId) {
+    target = target.to(`user:${userId}`);
   }
 
   if (conversation.guestId) {
@@ -119,12 +137,26 @@ export const emitToSupportAgents = (event: string, payload: unknown): void => {
   }
 };
 
+export const evictGuestFromRooms = (
+  guestId: string,
+  conversationIds: string[]
+): void => {
+  if (!io) return;
+  const guestRoom = `guest:${guestId}`;
+  for (const convId of conversationIds) {
+    io.in(guestRoom).socketsLeave(`conversation:${convId}`);
+  }
+  io.in(guestRoom).socketsLeave(guestRoom);
+};
+
 export const closeSocketServer = async (): Promise<void> => {
   if (io) {
     logger.info('Closing Socket.IO server...');
+    const instance = io;
+    io = null;
+    instance.disconnectSockets(true);
     await new Promise<void>((resolve) => {
-      io!.close(() => {
-        io = null;
+      instance.close(() => {
         resolve();
       });
     });

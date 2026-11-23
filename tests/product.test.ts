@@ -158,6 +158,32 @@ describe('Product API Integration Tests', () => {
       expect(res.body.status).toBe('fail');
       expect(res.body.message).toMatch(/already exists/i);
     });
+
+    it('should create product with per-SKU variants and sync total quantity', async () => {
+      const res = await request(app)
+        .post('/api/v1/products')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({
+          ...sampleProductData,
+          sku: 'SHIRT-BASE-001',
+          price: 50,
+          compareAtPrice: 70,
+          variants: [
+            { sku: 'SHIRT-S-BLK', size: 'S', color: 'Black', stock: 5 },
+            {
+              sku: 'SHIRT-M-BLK',
+              size: 'M',
+              color: 'Black',
+              priceModifier: 5,
+              stock: 8,
+            },
+          ],
+        });
+
+      expect(res.statusCode).toBe(201);
+      expect(res.body.data.product.quantity).toBe(13);
+      expect(res.body.data.product.variants).toHaveLength(2);
+    });
   });
 
   describe('GET /api/v1/products', () => {
@@ -239,6 +265,58 @@ describe('Product API Integration Tests', () => {
       expect(res.body.data.products[0]).toHaveProperty('price');
       expect(res.body.data.products[0]).not.toHaveProperty('description');
     });
+
+    it('should parse bracket operators (price[gte]), respect isFeatured=false, and block $where injection', async () => {
+      await Product.create({
+        ...sampleProductData,
+        name: 'Non Featured Item',
+        sku: 'SKU-NON-FEAT',
+        price: 75,
+        isFeatured: false,
+      });
+
+      const bracketRes = await request(app).get(
+        '/api/v1/products?price[gte]=100&price[lte]=200'
+      );
+      expect(bracketRes.statusCode).toBe(200);
+      expect(bracketRes.body.results).toBe(1);
+      expect(bracketRes.body.data.products[0].name).toBe('Item B');
+
+      const falseFeatRes = await request(app).get(
+        '/api/v1/products?isFeatured=false'
+      );
+      expect(falseFeatRes.statusCode).toBe(200);
+      expect(falseFeatRes.body.results).toBe(1);
+      expect(falseFeatRes.body.data.products[0].sku).toBe('SKU-NON-FEAT');
+
+      const nosqlRes = await request(app).get(
+        '/api/v1/products?$where=sleep(5000)&category=Books'
+      );
+      expect(nosqlRes.statusCode).toBe(200);
+      expect(nosqlRes.body.results).toBe(1);
+      expect(nosqlRes.body.data.products[0].name).toBe('Item A');
+    });
+
+    it('should hide costPrice and draft products from public callers', async () => {
+      await Product.create({
+        ...sampleProductData,
+        name: 'Draft Secret Product',
+        sku: 'SKU-DRAFT-1',
+        costPrice: 42.5,
+        status: 'draft',
+      });
+      await Product.updateOne(
+        { sku: 'SKU-001' },
+        { $set: { costPrice: 12.34 } }
+      );
+
+      const listRes = await request(app).get('/api/v1/products');
+      expect(listRes.statusCode).toBe(200);
+      expect(listRes.body.results).toBe(3); // excludes draft
+      for (const p of listRes.body.data.products) {
+        expect(p.costPrice).toBeUndefined();
+      }
+    });
   });
 
   describe('GET /api/v1/products/:id', () => {
@@ -303,6 +381,66 @@ describe('Product API Integration Tests', () => {
       expect(res.body.data.product.name).toBe('Premium Bluetooth Headphones');
       expect(res.body.data.product.slug).toBe('premium-bluetooth-headphones');
       expect(res.body.data.product.price).toBe(219.99);
+    });
+
+    it('should enforce seller ownership on product updates and stock adjustments', async () => {
+      const sellerA = await User.create({
+        firstName: 'Seller',
+        lastName: 'A',
+        email: 'sellera@example.com',
+        password: 'Password123!',
+        role: 'seller',
+      });
+      const sellerB = await User.create({
+        firstName: 'Seller',
+        lastName: 'B',
+        email: 'sellerb@example.com',
+        password: 'Password123!',
+        role: 'seller',
+      });
+      const tokenA = signAccessToken(sellerA._id.toString(), 'seller');
+      const tokenB = signAccessToken(sellerB._id.toString(), 'seller');
+
+      const createRes = await request(app)
+        .post('/api/v1/products')
+        .set('Authorization', `Bearer ${tokenA}`)
+        .send(sampleProductData);
+      expect(createRes.statusCode).toBe(201);
+      const productId = createRes.body.data.product._id;
+
+      // Seller B cannot update Seller A's product
+      const forbidUpdate = await request(app)
+        .patch(`/api/v1/products/${productId}`)
+        .set('Authorization', `Bearer ${tokenB}`)
+        .send({ price: 1 });
+      expect(forbidUpdate.statusCode).toBe(403);
+
+      // Seller B cannot adjust Seller A's stock
+      const forbidStock = await request(app)
+        .patch(`/api/v1/products/${productId}/stock`)
+        .set('Authorization', `Bearer ${tokenB}`)
+        .send({ quantity: 5, operation: 'decrement' });
+      expect(forbidStock.statusCode).toBe(403);
+
+      // Seller A can update their own product
+      const ownerUpdate = await request(app)
+        .patch(`/api/v1/products/${productId}`)
+        .set('Authorization', `Bearer ${tokenA}`)
+        .send({ price: 179.99 });
+      expect(ownerUpdate.statusCode).toBe(200);
+
+      // Cross-field compareAtPrice validation works on PATCH
+      const validCompareUpdate = await request(app)
+        .patch(`/api/v1/products/${productId}`)
+        .set('Authorization', `Bearer ${tokenA}`)
+        .send({ compareAtPrice: 220 });
+      expect(validCompareUpdate.statusCode).toBe(200);
+
+      const invalidPriceUpdate = await request(app)
+        .patch(`/api/v1/products/${productId}`)
+        .set('Authorization', `Bearer ${tokenA}`)
+        .send({ price: 250 });
+      expect(invalidPriceUpdate.statusCode).toBe(400);
     });
   });
 
@@ -370,7 +508,7 @@ describe('Product API Integration Tests', () => {
   });
 
   describe('GET /api/v1/products/stats', () => {
-    it('should calculate category aggregation statistics', async () => {
+    it('should forbid unauthenticated access and allow admin/seller stats calculation', async () => {
       await Product.create([
         {
           ...sampleProductData,
@@ -398,7 +536,12 @@ describe('Product API Integration Tests', () => {
         },
       ]);
 
-      const res = await request(app).get('/api/v1/products/stats');
+      const unauthRes = await request(app).get('/api/v1/products/stats');
+      expect(unauthRes.statusCode).toBe(401);
+
+      const res = await request(app)
+        .get('/api/v1/products/stats')
+        .set('Authorization', `Bearer ${adminToken}`);
 
       expect(res.statusCode).toBe(200);
       expect(res.body.status).toBe('success');

@@ -1,5 +1,8 @@
 import { z } from 'zod';
-import { MAX_CONTEXT_CARDS_PER_MESSAGE } from '../config/constants.js';
+import {
+  DEFAULT_CHAT_PAGE_LIMIT,
+  MAX_CONTEXT_CARDS_PER_MESSAGE,
+} from '../config/constants.js';
 import { objectIdSchema } from './commonValidation.js';
 
 export const chatContextCardInputSchema = z
@@ -56,22 +59,51 @@ export const updateConversationStatusSchema = z.object({
 });
 
 export const conversationQuerySchema = z.object({
-  page: z.coerce.number().int().min(1).default(1),
-  limit: z.coerce.number().int().min(1).max(100).default(30),
+  page: z.coerce.number().int().min(1).max(1000).default(1),
+  limit: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(100)
+    .default(DEFAULT_CHAT_PAGE_LIMIT),
   status: z
     .enum(['bot_active', 'queued', 'assigned', 'resolved', 'closed'])
     .optional(),
   mode: z.enum(['ai', 'support', 'seller']).optional(),
   assignedAgent: objectIdSchema.optional(),
-  sort: z.string().optional(),
+  sort: z.string().trim().max(100).optional(),
+});
+
+export const messageQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).max(1000).default(1),
+  limit: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(100)
+    .default(DEFAULT_CHAT_PAGE_LIMIT),
 });
 
 export const mergeChatSchema = z.object({
-  guestId: z
+  guestToken: z
     .string()
     .trim()
-    .min(8, 'Guest ID must be at least 8 characters')
-    .max(128, 'Guest ID cannot exceed 128 characters'),
+    .min(16, 'Invalid guest token')
+    .max(512, 'Invalid guest token')
+    .optional(),
+});
+
+export const socketSendMessageSchema = sendMessageSchema.extend({
+  conversationId: objectIdSchema,
+});
+
+export const socketHandoffSchema = handoffSchema.extend({
+  conversationId: objectIdSchema,
+});
+
+export const socketTypingSchema = z.object({
+  conversationId: objectIdSchema,
+  isTyping: z.boolean(),
 });
 
 export type ChatContextCardInput = z.infer<typeof chatContextCardInputSchema>;
@@ -82,4 +114,5 @@ export type UpdateConversationStatusInput = z.infer<
   typeof updateConversationStatusSchema
 >;
 export type ConversationQueryInput = z.infer<typeof conversationQuerySchema>;
+export type MessageQueryInput = z.infer<typeof messageQuerySchema>;
 export type MergeChatInput = z.infer<typeof mergeChatSchema>;

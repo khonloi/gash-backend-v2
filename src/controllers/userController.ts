@@ -2,6 +2,10 @@ import { Request, Response } from 'express';
 import { catchAsync } from '../utils/catchAsync.js';
 import { userService } from '../services/userService.js';
 import { sendPaginated, sendSuccess } from '../utils/response.js';
+import {
+  clearRefreshTokenCookie,
+  setRefreshTokenCookie,
+} from '../utils/cookies.js';
 
 export const getMe = catchAsync(
   async (req: Request, res: Response): Promise<void> => {
@@ -19,18 +23,20 @@ export const updateMe = catchAsync(
 
 export const changePassword = catchAsync(
   async (req: Request, res: Response): Promise<void> => {
-    const result = await userService.changePassword(
+    const { response, refreshToken } = await userService.changePassword(
       req.user!._id.toString(),
       req.body
     );
-    sendSuccess(res, result);
+    setRefreshTokenCookie(res, refreshToken);
+    sendSuccess(res, response);
   }
 );
 
 export const deactivateMe = catchAsync(
   async (req: Request, res: Response): Promise<void> => {
     await userService.deactivateMe(req.user!._id.toString());
-    sendSuccess(res, null, 204);
+    clearRefreshTokenCookie(res);
+    res.status(204).send();
   }
 );
 
@@ -92,7 +98,8 @@ export const updateUserRole = catchAsync(
   async (req: Request, res: Response): Promise<void> => {
     const user = await userService.updateUserRole(
       req.params.id as string,
-      req.body.role
+      req.body.role,
+      req.user?._id?.toString()
     );
     sendSuccess(res, { user });
   }
@@ -104,6 +111,6 @@ export const deleteUser = catchAsync(
       req.params.id as string,
       req.user?._id?.toString()
     );
-    sendSuccess(res, null, 204);
+    res.status(204).send();
   }
 );

@@ -125,13 +125,13 @@ describe('Cart Integration Tests', () => {
       expect(items[0].quantity).toBe(5);
     });
 
-    it('should treat different variants (e.g. size) as distinct cart items', async () => {
+    it('should treat different variants (e.g. size) as distinct cart items and enforce cumulative stock', async () => {
       await request(app)
         .post('/api/v1/cart/items')
         .set('Authorization', `Bearer ${customerToken}`)
         .send({
           productId: testProduct._id.toString(),
-          quantity: 1,
+          quantity: 6,
           size: '42',
         });
 
@@ -140,12 +140,92 @@ describe('Cart Integration Tests', () => {
         .set('Authorization', `Bearer ${customerToken}`)
         .send({
           productId: testProduct._id.toString(),
-          quantity: 1,
+          quantity: 2,
           size: '43',
         });
 
       expect(res.statusCode).toBe(200);
       expect(res.body.data.cart.items).toHaveLength(2);
+
+      // Adding 5 more of size 43 would exceed total product stock (6 + 2 + 5 = 13 > 10)
+      const exceedRes = await request(app)
+        .post('/api/v1/cart/items')
+        .set('Authorization', `Bearer ${customerToken}`)
+        .send({
+          productId: testProduct._id.toString(),
+          quantity: 5,
+          size: '43',
+        });
+
+      expect(exceedRes.statusCode).toBe(400);
+      expect(exceedRes.body.message).toMatch(/Insufficient stock/i);
+    });
+
+    it('should validate per-SKU product variants, stock, and priceModifier in cart', async () => {
+      const variantProd = await Product.create({
+        name: 'Variant Jacket',
+        slug: 'variant-jacket',
+        description: 'Multi-variant jacket',
+        price: 100,
+        sku: 'JKT-BASE',
+        quantity: 7,
+        category: 'Apparel',
+        status: 'active',
+        variants: [
+          {
+            sku: 'JKT-M-BLK',
+            size: 'M',
+            color: 'Black',
+            priceModifier: 15,
+            stock: 2,
+          },
+          {
+            sku: 'JKT-L-RED',
+            size: 'L',
+            color: 'Red',
+            price: 130,
+            stock: 5,
+          },
+        ],
+      });
+
+      // Invalid variant rejected
+      const badVar = await request(app)
+        .post('/api/v1/cart/items')
+        .set('Authorization', `Bearer ${customerToken}`)
+        .send({
+          productId: variantProd._id.toString(),
+          quantity: 1,
+          size: 'XL',
+          color: 'Green',
+        });
+      expect(badVar.statusCode).toBe(400);
+
+      // Exceeds variant stock (2) even though total quantity is 7
+      const exceedVar = await request(app)
+        .post('/api/v1/cart/items')
+        .set('Authorization', `Bearer ${customerToken}`)
+        .send({
+          productId: variantProd._id.toString(),
+          quantity: 3,
+          size: 'M',
+          color: 'Black',
+        });
+      expect(exceedVar.statusCode).toBe(400);
+
+      // Valid variant applies priceModifier (100 + 15 = 115)
+      const okVar = await request(app)
+        .post('/api/v1/cart/items')
+        .set('Authorization', `Bearer ${customerToken}`)
+        .send({
+          productId: variantProd._id.toString(),
+          quantity: 2,
+          size: 'M',
+          color: 'Black',
+        });
+      expect(okVar.statusCode).toBe(200);
+      expect(okVar.body.data.cart.items[0].priceAtAdd).toBe(115);
+      expect(okVar.body.data.cart.totalPrice).toBe(230);
     });
 
     it('should fail with 400 when quantity exceeds available product stock', async () => {
@@ -284,6 +364,17 @@ describe('Cart Integration Tests', () => {
 
       expect(delRes.statusCode).toBe(200);
       expect(delRes.body.data.cart.items).toHaveLength(0);
+    });
+
+    it('should return 404 when removing a non-existent cart item', async () => {
+      await request(app)
+        .get('/api/v1/cart')
+        .set('Authorization', `Bearer ${customerToken}`);
+      const fakeItemId = new mongoose.Types.ObjectId().toString();
+      const delRes = await request(app)
+        .delete(`/api/v1/cart/items/${fakeItemId}`)
+        .set('Authorization', `Bearer ${customerToken}`);
+      expect(delRes.statusCode).toBe(404);
     });
   });
 

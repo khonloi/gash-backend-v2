@@ -95,11 +95,23 @@ describe('User Profile & Admin Integration Tests', () => {
       expect(res.statusCode).toBe(200);
       expect(res.body.data.user.firstName).toBe('Jonathan');
       expect(res.body.data.user.phone).toBe('+15559876543');
+      expect(res.body.data.user).not.toHaveProperty('passwordChangedAt');
+    });
+
+    it('should reject dangerous avatar URI schemes', async () => {
+      const res = await request(app)
+        .patch('/api/v1/users/me')
+        .set('Authorization', `Bearer ${customerToken}`)
+        .send({
+          avatar: 'javascript:alert(1)',
+        });
+
+      expect(res.statusCode).toBe(400);
     });
   });
 
   describe('PATCH /api/v1/users/me/password', () => {
-    it('should change password successfully', async () => {
+    it('should change password, set new HttpOnly refresh cookie, and invalidate old access token', async () => {
       const res = await request(app)
         .patch('/api/v1/users/me/password')
         .set('Authorization', `Bearer ${customerToken}`)
@@ -111,6 +123,26 @@ describe('User Profile & Admin Integration Tests', () => {
 
       expect(res.statusCode).toBe(200);
       expect(res.body.data.tokens).toHaveProperty('accessToken');
+      expect(res.body.data.tokens).not.toHaveProperty('refreshToken');
+
+      const setCookie = res.headers['set-cookie'] as unknown as string[];
+      expect(setCookie).toBeDefined();
+      const refreshCookie = setCookie.find((c) =>
+        c.startsWith('refreshToken=')
+      );
+      expect(refreshCookie).toBeDefined();
+
+      // Refreshing using the new cookie works without triggering reuse detection
+      const refreshRes = await request(app)
+        .post('/api/v1/auth/refresh-token')
+        .set('Cookie', refreshCookie!.split(';')[0]);
+      expect(refreshRes.statusCode).toBe(200);
+
+      // Old access token is invalidated immediately
+      const oldTokenRes = await request(app)
+        .get('/api/v1/users/me')
+        .set('Authorization', `Bearer ${customerToken}`);
+      expect(oldTokenRes.statusCode).toBe(401);
 
       // Verify can login with new password
       const loginRes = await request(app).post('/api/v1/auth/login').send({
@@ -214,11 +246,16 @@ describe('User Profile & Admin Integration Tests', () => {
       expect(second?.isDefault).toBe(true);
     });
 
-    it('should update an existing address', async () => {
+    it('should update an existing address without resetting label, country, or isDefault', async () => {
       const addRes = await request(app)
         .post('/api/v1/users/me/addresses')
         .set('Authorization', `Bearer ${customerToken}`)
-        .send(sampleAddress);
+        .send({
+          ...sampleAddress,
+          label: 'Office',
+          country: 'CA',
+          isDefault: true,
+        });
 
       const addressId = addRes.body.data.addresses[0]._id;
 
@@ -234,6 +271,9 @@ describe('User Profile & Admin Integration Tests', () => {
       );
       expect(updated?.city).toBe('Chicago');
       expect(updated?.postalCode).toBe('60601');
+      expect(updated?.label).toBe('Office');
+      expect(updated?.country).toBe('CA');
+      expect(updated?.isDefault).toBe(true);
     });
 
     it('should remove an address', async () => {
@@ -265,6 +305,53 @@ describe('User Profile & Admin Integration Tests', () => {
       expect(res.body).toHaveProperty('pagination');
     });
 
+    it('should never expose password or token hashes via ?fields= projection and should honor ?isActive=false', async () => {
+      await User.create({
+        firstName: 'Inactive',
+        lastName: 'Account',
+        email: 'inactive.query@example.com',
+        password: 'Password123!',
+        isActive: false,
+      });
+
+      const projRes = await request(app)
+        .get(
+          '/api/v1/users?fields=email,password,refreshTokens,passwordResetToken'
+        )
+        .set('Authorization', `Bearer ${adminToken}`);
+
+      expect(projRes.statusCode).toBe(200);
+      for (const u of projRes.body.data.users) {
+        expect(u.email).toBeDefined();
+        expect(u.password).toBeUndefined();
+        expect(u.refreshTokens).toBeUndefined();
+        expect(u.passwordResetToken).toBeUndefined();
+      }
+
+      const spaceProjRes = await request(app)
+        .get('/api/v1/users?fields=email%20+password')
+        .set('Authorization', `Bearer ${adminToken}`);
+      expect(spaceProjRes.statusCode).toBe(200);
+      for (const u of spaceProjRes.body.data.users) {
+        expect(u.password).toBeUndefined();
+      }
+
+      const inactiveRes = await request(app)
+        .get('/api/v1/users?isActive=false')
+        .set('Authorization', `Bearer ${adminToken}`);
+      expect(inactiveRes.statusCode).toBe(200);
+      expect(inactiveRes.body.results).toBe(1);
+      expect(inactiveRes.body.data.users[0].email).toBe(
+        'inactive.query@example.com'
+      );
+
+      const searchRes = await request(app)
+        .get('/api/v1/users?search=John')
+        .set('Authorization', `Bearer ${adminToken}`);
+      expect(searchRes.statusCode).toBe(200);
+      expect(searchRes.body.results).toBeGreaterThanOrEqual(1);
+    });
+
     it('should forbid customer from listing all users', async () => {
       const res = await request(app)
         .get('/api/v1/users')
@@ -274,7 +361,7 @@ describe('User Profile & Admin Integration Tests', () => {
       expect(res.body.status).toBe('fail');
     });
 
-    it('should allow admin to update a user role', async () => {
+    it('should allow admin to update a user role and prevent admin self-demotion', async () => {
       const res = await request(app)
         .patch(`/api/v1/users/${customerId}/role`)
         .set('Authorization', `Bearer ${adminToken}`)
@@ -285,6 +372,19 @@ describe('User Profile & Admin Integration Tests', () => {
 
       const updated = await User.findById(customerId);
       expect(updated?.role).toBe('seller');
+
+      // Previous customer token invalidated on role change
+      const staleRes = await request(app)
+        .get('/api/v1/users/me')
+        .set('Authorization', `Bearer ${customerToken}`);
+      expect(staleRes.statusCode).toBe(401);
+
+      // Admin cannot self-demote
+      const selfDemote = await request(app)
+        .patch(`/api/v1/users/${adminId}/role`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ role: 'customer' });
+      expect(selfDemote.statusCode).toBe(400);
     });
 
     it('should allow admin to delete a user', async () => {

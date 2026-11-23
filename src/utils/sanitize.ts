@@ -1,21 +1,7 @@
 import { IUser } from '../types/index.js';
-import { SAFE_USER_FIELDS } from '../config/constants.js';
+import { SAFE_USER_FIELDS, type SafeUserField } from '../config/constants.js';
 
-export type ISafeUser = Pick<
-  IUser,
-  | '_id'
-  | 'firstName'
-  | 'lastName'
-  | 'email'
-  | 'role'
-  | 'avatar'
-  | 'phone'
-  | 'isActive'
-  | 'isEmailVerified'
-  | 'addresses'
-  | 'createdAt'
-  | 'updatedAt'
->;
+export type ISafeUser = Pick<IUser, SafeUserField>;
 
 /**
  * Sanitizes a User document or object by selecting only whitelisted safe fields.

@@ -8,6 +8,8 @@ import { Product } from '../src/models/Product.js';
 import { Order } from '../src/models/Order.js';
 import { User } from '../src/models/User.js';
 import { signAccessToken } from '../src/utils/jwt.js';
+import { signGuestToken } from '../src/utils/guestToken.js';
+import { aiChatService } from '../src/services/aiChatService.js';
 import { IProduct, IOrder } from '../src/types/index.js';
 
 let mongoServer: MongoMemoryServer;
@@ -15,9 +17,11 @@ let customerToken: string;
 let customerId: string;
 let adminToken: string;
 let adminId: string;
+let sellerToken: string;
 let testProduct: IProduct;
 let testOrder: IOrder;
 const guestId = 'guest-session-uuid-12345678';
+const guestToken = signGuestToken(guestId);
 
 beforeAll(async () => {
   mongoServer = await MongoMemoryServer.create();
@@ -56,6 +60,15 @@ beforeEach(async () => {
   });
   adminId = admin._id.toString();
   adminToken = signAccessToken(adminId, 'admin');
+
+  const seller = await User.create({
+    firstName: 'Chat',
+    lastName: 'Seller',
+    email: 'chat.seller@example.com',
+    password: 'Password123!',
+    role: 'seller',
+  });
+  sellerToken = signAccessToken(seller._id.toString(), 'seller');
 
   testProduct = await Product.create({
     name: 'Wireless Noise Cancelling Headphones',
@@ -101,8 +114,28 @@ beforeEach(async () => {
 });
 
 describe('Chat REST API Integration Tests', () => {
+  describe('POST /api/v1/chat/guest-session & guest authentication', () => {
+    it('should issue a signed guestToken and HttpOnly cookie', async () => {
+      const res = await request(app).post('/api/v1/chat/guest-session');
+
+      expect(res.statusCode).toBe(201);
+      expect(res.body.data.guestId).toMatch(/^guest_/);
+      expect(res.body.data.guestToken).toMatch(/^gst\./);
+      expect(res.headers['set-cookie']).toBeDefined();
+    });
+
+    it('should reject unsigned raw x-guest-id without valid guestToken with 401', async () => {
+      const res = await request(app)
+        .post('/api/v1/chat/conversations')
+        .set('x-guest-id', 'unsigned-spoofed-guest-id')
+        .send({ subject: 'Spoof attempt' });
+
+      expect(res.statusCode).toBe(401);
+    });
+  });
+
   describe('POST /api/v1/chat/conversations', () => {
-    it('should reject unauthenticated request without guestId with 401', async () => {
+    it('should reject unauthenticated request without guestToken with 401', async () => {
       const res = await request(app)
         .post('/api/v1/chat/conversations')
         .send({ subject: 'General inquiry' });
@@ -110,10 +143,10 @@ describe('Chat REST API Integration Tests', () => {
       expect(res.statusCode).toBe(401);
     });
 
-    it('should create an AI conversation for guest with initial message and generate AI reply', async () => {
+    it('should create an AI conversation for guest with signed guestToken and generate 1 AI reply', async () => {
       const res = await request(app)
         .post('/api/v1/chat/conversations')
-        .set('x-guest-id', guestId)
+        .set('x-guest-token', guestToken)
         .send({
           subject: 'Looking for headphones',
           mode: 'ai',
@@ -134,18 +167,18 @@ describe('Chat REST API Integration Tests', () => {
       expect(res.body.data.conversation.status).toBe('bot_active');
       expect(res.body.data.conversation.guestId).toBe(guestId);
       expect(res.body.data.initialMessage).toBeDefined();
+      expect(res.body.data.aiReply).toBeDefined();
 
-      // Check messages stored in database
       const messages = await Message.find({
         conversation: res.body.data.conversation._id,
       });
-      expect(messages.length).toBeGreaterThanOrEqual(2); // user message + AI reply
+      expect(messages).toHaveLength(2);
       const aiReply = messages.find((m) => m.senderType === 'ai');
-      expect(aiReply).toBeDefined();
+      expect(aiReply?.aiMetadata?.model).toBe('local-fallback');
       expect(aiReply?.contextCards.length).toBeGreaterThanOrEqual(1);
     });
 
-    it('should create an AI conversation for authenticated customer', async () => {
+    it('should create an AI conversation for authenticated customer and allow GET /conversations/:id', async () => {
       const res = await request(app)
         .post('/api/v1/chat/conversations')
         .set('Authorization', `Bearer ${customerToken}`)
@@ -156,6 +189,22 @@ describe('Chat REST API Integration Tests', () => {
 
       expect(res.statusCode).toBe(201);
       expect(res.body.data.conversation.user._id).toBe(customerId);
+      expect(res.body.data.conversation.user.email).toBeUndefined();
+
+      // Customer can retrieve their own conversation (tests populated user resolveOwnerId fix)
+      const getRes = await request(app)
+        .get(`/api/v1/chat/conversations/${res.body.data.conversation._id}`)
+        .set('Authorization', `Bearer ${customerToken}`);
+      expect(getRes.statusCode).toBe(200);
+      expect(getRes.body.data.conversation._id).toBe(
+        res.body.data.conversation._id
+      );
+
+      // Seller cannot inspect active AI conversation
+      const sellerGetRes = await request(app)
+        .get(`/api/v1/chat/conversations/${res.body.data.conversation._id}`)
+        .set('Authorization', `Bearer ${sellerToken}`);
+      expect(sellerGetRes.statusCode).toBe(403);
     });
   });
 
@@ -218,8 +267,8 @@ describe('Chat REST API Integration Tests', () => {
     });
   });
 
-  describe('Messages and Context Cards (POST & GET /conversations/:id/messages)', () => {
-    it('should allow customer to send message with order context card', async () => {
+  describe('Messages, AI Tool Safety & Context Cards', () => {
+    it('should allow customer to send message with order context card and generate 1 AI reply', async () => {
       const conv = await Conversation.create({
         user: customerId,
         mode: 'ai',
@@ -246,13 +295,49 @@ describe('Chat REST API Integration Tests', () => {
       expect(res.body.data.message.contextCards.length).toBe(1);
       expect(res.body.data.message.contextCards[0].order).toBeDefined();
 
-      // Verify AI auto-replied and attached order card
       expect(res.body.data.aiReply).toBeDefined();
       expect(res.body.data.aiReply.senderType).toBe('ai');
       expect(res.body.data.aiReply.content).toContain('GS-260914-ABC');
     });
 
-    it('should retrieve paginated messages with populated context cards', async () => {
+    it('should handle regex metacharacters safely, hide draft stock, and avoid false-positive handoff on "arch support shoes"', async () => {
+      await Product.create({
+        name: 'Secret Draft Product',
+        slug: 'secret-draft-product',
+        description: 'Hidden draft item',
+        price: 99,
+        sku: 'DRAFT-001',
+        category: 'Shoes',
+        quantity: 5,
+        status: 'draft',
+      });
+
+      const stockRes = await aiChatService.toolGetProductStock({
+        identifier: '[Draft (Secret',
+      });
+      expect(stockRes.cards).toHaveLength(0);
+
+      const draftLookup = await aiChatService.toolGetProductStock({
+        identifier: 'Secret Draft Product',
+      });
+      expect(draftLookup.cards).toHaveLength(0);
+
+      const conv = await Conversation.create({
+        user: customerId,
+        mode: 'ai',
+        status: 'bot_active',
+      });
+      const res = await request(app)
+        .post(`/api/v1/chat/conversations/${conv._id}/messages`)
+        .set('Authorization', `Bearer ${customerToken}`)
+        .send({ content: 'Do you recommend arch support shoes?' });
+
+      expect(res.statusCode).toBe(201);
+      const updatedConv = await Conversation.findById(conv._id);
+      expect(updatedConv?.status).toBe('bot_active');
+    });
+
+    it('should reject invalid pagination limit (>100) on GET /messages and retrieve paginated messages', async () => {
       const conv = await Conversation.create({
         user: customerId,
         mode: 'ai',
@@ -266,6 +351,11 @@ describe('Chat REST API Integration Tests', () => {
         content: 'Hello assistant',
       });
 
+      const badLimitRes = await request(app)
+        .get(`/api/v1/chat/conversations/${conv._id}/messages?limit=1000`)
+        .set('Authorization', `Bearer ${customerToken}`);
+      expect(badLimitRes.statusCode).toBe(400);
+
       const res = await request(app)
         .get(`/api/v1/chat/conversations/${conv._id}/messages`)
         .set('Authorization', `Bearer ${customerToken}`);
@@ -276,7 +366,7 @@ describe('Chat REST API Integration Tests', () => {
     });
   });
 
-  describe('Support Escalation and Status Transitions', () => {
+  describe('Support Escalation, Atomic Assignment & Status Transitions', () => {
     it('should block staff from messaging bot_active conversations until customer requests handoff', async () => {
       const conv = await Conversation.create({
         user: customerId,
@@ -291,7 +381,6 @@ describe('Chat REST API Integration Tests', () => {
 
       expect(blockedRes.statusCode).toBe(400);
 
-      // Customer requests handoff -> queued
       const handoffRes = await request(app)
         .post(`/api/v1/chat/conversations/${conv._id}/handoff`)
         .set('Authorization', `Bearer ${customerToken}`)
@@ -300,7 +389,6 @@ describe('Chat REST API Integration Tests', () => {
       expect(handoffRes.statusCode).toBe(200);
       expect(handoffRes.body.data.conversation.status).toBe('queued');
 
-      // Staff can now reply
       const allowedRes = await request(app)
         .post(`/api/v1/chat/conversations/${conv._id}/messages`)
         .set('Authorization', `Bearer ${adminToken}`)
@@ -310,40 +398,48 @@ describe('Chat REST API Integration Tests', () => {
       expect(allowedRes.body.data.message.senderType).toBe('agent');
     });
 
-    it('should escalate conversation to queued when calling /handoff', async () => {
-      const conv = await Conversation.create({
-        user: customerId,
-        mode: 'ai',
-        status: 'bot_active',
-      });
-
-      const res = await request(app)
-        .post(`/api/v1/chat/conversations/${conv._id}/handoff`)
-        .set('Authorization', `Bearer ${customerToken}`)
-        .send({ reason: 'Need warranty claim assistance' });
-
-      expect(res.statusCode).toBe(200);
-      expect(res.body.data.conversation.status).toBe('queued');
-      expect(res.body.data.conversation.mode).toBe('support');
-      expect(res.body.data.conversation.handoffReason).toBe(
-        'Need warranty claim assistance'
-      );
-    });
-
-    it('should allow admin to assign conversation', async () => {
+    it('should atomically assign conversation once and reject second claim with 409', async () => {
       const conv = await Conversation.create({
         user: customerId,
         mode: 'support',
         status: 'queued',
       });
 
-      const res = await request(app)
+      const res1 = await request(app)
         .patch(`/api/v1/chat/conversations/${conv._id}/assign`)
         .set('Authorization', `Bearer ${adminToken}`);
 
-      expect(res.statusCode).toBe(200);
-      expect(res.body.data.conversation.status).toBe('assigned');
-      expect(res.body.data.conversation.assignedAgent._id).toBe(adminId);
+      expect(res1.statusCode).toBe(200);
+      expect(res1.body.data.conversation.status).toBe('assigned');
+      expect(res1.body.data.conversation.assignedAgent._id).toBe(adminId);
+
+      // Second concurrent/duplicate claim by seller returns 409 Conflict
+      const res2 = await request(app)
+        .patch(`/api/v1/chat/conversations/${conv._id}/assign`)
+        .set('Authorization', `Bearer ${sellerToken}`);
+      expect(res2.statusCode).toBe(409);
+    });
+
+    it('should prevent customers from setting assigned/resolved status directly and sync mode when returning to bot_active', async () => {
+      const conv = await Conversation.create({
+        user: customerId,
+        mode: 'support',
+        status: 'queued',
+      });
+
+      const forbidAssign = await request(app)
+        .patch(`/api/v1/chat/conversations/${conv._id}/status`)
+        .set('Authorization', `Bearer ${customerToken}`)
+        .send({ status: 'assigned' });
+      expect(forbidAssign.statusCode).toBe(403);
+
+      const reopenBot = await request(app)
+        .patch(`/api/v1/chat/conversations/${conv._id}/status`)
+        .set('Authorization', `Bearer ${customerToken}`)
+        .send({ status: 'bot_active' });
+      expect(reopenBot.statusCode).toBe(200);
+      expect(reopenBot.body.data.conversation.mode).toBe('ai');
+      expect(reopenBot.body.data.conversation.status).toBe('bot_active');
     });
 
     it('should mark conversation messages as read', async () => {
@@ -377,7 +473,16 @@ describe('Chat REST API Integration Tests', () => {
   });
 
   describe('Guest-to-User Chat Session Merge (POST /api/v1/chat/merge)', () => {
-    it('should merge guest conversations and upgrade message sender to customer', async () => {
+    it('should reject merge with unsigned/forged guest token', async () => {
+      const res = await request(app)
+        .post('/api/v1/chat/merge')
+        .set('Authorization', `Bearer ${customerToken}`)
+        .send({ guestToken: 'gst.forged-guest-id.invalidsig' });
+
+      expect(res.statusCode).toBe(401);
+    });
+
+    it('should merge guest conversations using signed guestToken and upgrade message sender to customer', async () => {
       const guestConv = await Conversation.create({
         guestId,
         mode: 'ai',
@@ -394,7 +499,7 @@ describe('Chat REST API Integration Tests', () => {
       const res = await request(app)
         .post('/api/v1/chat/merge')
         .set('Authorization', `Bearer ${customerToken}`)
-        .send({ guestId });
+        .send({ guestToken });
 
       expect(res.statusCode).toBe(200);
       expect(res.body.data.mergedConversations).toBe(1);

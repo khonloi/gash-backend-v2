@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import {
+  createGuestChatSession,
   createConversation,
   getConversations,
   getConversation,
@@ -19,13 +20,17 @@ import {
   handoffSchema,
   updateConversationStatusSchema,
   conversationQuerySchema,
+  messageQuerySchema,
   mergeChatSchema,
 } from '../validations/chatValidation.js';
 import { idParamSchema } from '../validations/commonValidation.js';
 
 const router: Router = Router();
 
-// Guest merge endpoint (must be authenticated)
+// Issue a signed guest chat session token + HttpOnly cookie
+router.post('/guest-session', createGuestChatSession);
+
+// Guest merge endpoint (must be authenticated + present signed guest token)
 router.post(
   '/merge',
   protect,
@@ -54,7 +59,12 @@ router
 
 router
   .route('/conversations/:id/messages')
-  .get(optionalAuth, validate(idParamSchema, 'params'), getMessages)
+  .get(
+    optionalAuth,
+    validate(idParamSchema, 'params'),
+    validate(messageQuerySchema, 'query'),
+    getMessages
+  )
   .post(
     optionalAuth,
     validate(idParamSchema, 'params'),

@@ -1,17 +1,21 @@
 import mongoose from 'mongoose';
-import { IUser } from '../types/index.js';
+
+type IdLike =
+  | mongoose.Types.ObjectId
+  | { _id?: mongoose.Types.ObjectId | string }
+  | string
+  | undefined
+  | null;
 
 /**
- * Resolves the string ID of an owner from an ObjectId, populated IUser, or string.
+ * Resolves the string ID of a referenced document from an ObjectId, populated doc, or string.
  */
-export const resolveOwnerId = (
-  user: mongoose.Types.ObjectId | IUser | string | undefined | null
-): string | undefined => {
+export const resolveOwnerId = (user: IdLike): string | undefined => {
   if (!user) return undefined;
   if (typeof user === 'string') return user;
   if (user instanceof mongoose.Types.ObjectId) return user.toString();
   if (typeof user === 'object' && '_id' in user && user._id) {
     return user._id.toString();
   }
-  return String(user);
+  return undefined;
 };

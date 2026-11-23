@@ -2,34 +2,22 @@ import { Request, Response } from 'express';
 import { catchAsync } from '../utils/catchAsync.js';
 import { chatService } from '../services/chatService.js';
 import { sendSuccess, sendPaginated } from '../utils/response.js';
-import { ChatActor, IConversation } from '../types/index.js';
+import { ChatActor } from '../types/index.js';
 import { ConversationQueryInput } from '../validations/chatValidation.js';
 import {
   emitToConversation,
   emitToConversationParticipants,
   emitToSupportAgents,
+  evictGuestFromRooms,
 } from '../socket/index.js';
-import { Message } from '../models/Message.js';
-import { Conversation } from '../models/Conversation.js';
-import { CHAT_USER_PROJECTION } from '../config/constants.js';
-
-async function emitLatestSystemMessage(
-  conversation:
-    IConversation | { _id: unknown; user?: unknown; guestId?: string | null }
-): Promise<void> {
-  const conversationId = String(conversation._id);
-  const sysMsg = await Message.findOne({
-    conversation: conversationId,
-    senderType: 'system',
-  })
-    .sort({ createdAt: -1 })
-    .populate('senderUser', CHAT_USER_PROJECTION);
-
-  if (sysMsg) {
-    const payload = { conversationId, message: sysMsg };
-    emitToConversationParticipants(conversation, 'chat:message', payload);
-  }
-}
+import {
+  clearGuestTokenCookie,
+  createGuestSession,
+  extractGuestTokenFromRequest,
+  setGuestTokenCookie,
+  verifyGuestToken,
+} from '../utils/guestToken.js';
+import { AppError } from '../utils/AppError.js';
 
 export function extractChatActor(req: Request): ChatActor {
   if (req.user) {
@@ -39,28 +27,60 @@ export function extractChatActor(req: Request): ChatActor {
     };
   }
 
-  const guestIdHeader = req.headers['x-guest-id'];
-  const guestId = Array.isArray(guestIdHeader)
-    ? guestIdHeader[0]
-    : (guestIdHeader as string | undefined);
+  const token = extractGuestTokenFromRequest(req);
+  const guestId = verifyGuestToken(token);
 
   return {
-    guestId: guestId?.trim(),
+    guestId,
     role: 'guest',
   };
 }
+
+export const createGuestChatSession = catchAsync(
+  async (_req: Request, res: Response): Promise<void> => {
+    const session = createGuestSession();
+    setGuestTokenCookie(res, session.guestToken);
+    sendSuccess(res, session, 201);
+  }
+);
 
 export const createConversation = catchAsync(
   async (req: Request, res: Response): Promise<void> => {
     const actor = extractChatActor(req);
     const result = await chatService.createOrGetConversation(actor, req.body);
 
+    const convId = String(result.conversation._id);
     if (result.initialMessage) {
-      const convId = String(result.conversation._id);
-      emitToSupportAgents('chat:message', {
+      emitToConversationParticipants(result.conversation, 'chat:message', {
         conversationId: convId,
         message: result.initialMessage,
       });
+    }
+    if (result.aiReply) {
+      emitToConversationParticipants(result.conversation, 'chat:message', {
+        conversationId: convId,
+        message: result.aiReply,
+      });
+    }
+    if (result.escalated) {
+      emitToConversationParticipants(
+        result.conversation,
+        'chat:handoff_occurred',
+        {
+          conversationId: convId,
+          status: result.conversation.status,
+          mode: result.conversation.mode,
+          reason: result.conversation.handoffReason,
+        }
+      );
+      if (result.systemMessage) {
+        emitToConversationParticipants(result.conversation, 'chat:message', {
+          conversationId: convId,
+          message: result.systemMessage,
+        });
+      }
+    }
+    if (result.conversation.status !== 'bot_active') {
       emitToSupportAgents('support:queue_updated', {
         conversationId: convId,
         status: result.conversation.status,
@@ -117,39 +137,53 @@ export const sendMessage = catchAsync(
       req.body
     );
 
-    const conversation = await Conversation.findById(conversationId).select(
-      'user guestId status mode'
-    );
-
-    // Broadcast messages to Socket room, customer room, and online support agents
-    const msgPayload = {
+    emitToConversationParticipants(result.conversation, 'chat:message', {
       conversationId,
       message: result.message,
-    };
-    if (conversation) {
-      emitToConversationParticipants(conversation, 'chat:message', msgPayload);
-    } else {
-      emitToConversation(conversationId, 'chat:message', msgPayload);
-      emitToSupportAgents('chat:message', msgPayload);
-    }
-    emitToSupportAgents('support:queue_updated', {
-      conversationId,
     });
 
     if (result.aiReply) {
-      const aiPayload = {
+      emitToConversationParticipants(result.conversation, 'chat:message', {
         conversationId,
         message: result.aiReply,
-      };
-      if (conversation) {
-        emitToConversationParticipants(conversation, 'chat:message', aiPayload);
-      } else {
-        emitToConversation(conversationId, 'chat:message', aiPayload);
-        emitToSupportAgents('chat:message', aiPayload);
+      });
+    }
+
+    if (result.escalated) {
+      emitToConversationParticipants(
+        result.conversation,
+        'chat:handoff_occurred',
+        {
+          conversationId,
+          status: result.conversation.status,
+          mode: result.conversation.mode,
+          reason: result.conversation.handoffReason,
+        }
+      );
+      if (result.systemMessage) {
+        emitToConversationParticipants(result.conversation, 'chat:message', {
+          conversationId,
+          message: result.systemMessage,
+        });
       }
     }
 
-    sendSuccess(res, result, 201);
+    if (result.conversation.status !== 'bot_active') {
+      emitToSupportAgents('support:queue_updated', {
+        conversationId,
+        status: result.conversation.status,
+        mode: result.conversation.mode,
+      });
+    }
+
+    sendSuccess(
+      res,
+      {
+        message: result.message,
+        ...(result.aiReply ? { aiReply: result.aiReply } : {}),
+      },
+      201
+    );
   }
 );
 
@@ -157,7 +191,7 @@ export const requestHandoff = catchAsync(
   async (req: Request, res: Response): Promise<void> => {
     const actor = extractChatActor(req);
     const conversationId = req.params.id as string;
-    const conversation = await chatService.requestHandoff(
+    const { conversation, systemMessage } = await chatService.requestHandoff(
       actor,
       conversationId,
       req.body.reason
@@ -169,7 +203,10 @@ export const requestHandoff = catchAsync(
       mode: conversation.mode,
       reason: conversation.handoffReason,
     });
-    await emitLatestSystemMessage(conversation);
+    emitToConversationParticipants(conversation, 'chat:message', {
+      conversationId,
+      message: systemMessage,
+    });
     emitToSupportAgents('support:queue_updated', {
       conversationId,
       status: conversation.status,
@@ -184,16 +221,13 @@ export const requestHandoff = catchAsync(
 export const assignConversation = catchAsync(
   async (req: Request, res: Response): Promise<void> => {
     const conversationId = req.params.id as string;
-    const conversation = await chatService.assignConversation(
-      req.user!,
-      conversationId
-    );
+    const { conversation, systemMessage } =
+      await chatService.assignConversation(req.user!, conversationId);
 
     const assignedAgent = {
       _id: String(req.user!._id),
       firstName: req.user!.firstName,
       lastName: req.user!.lastName,
-      email: req.user!.email,
       role: req.user!.role,
       avatar: req.user!.avatar,
     };
@@ -204,7 +238,10 @@ export const assignConversation = catchAsync(
       mode: conversation.mode,
       assignedAgent,
     });
-    await emitLatestSystemMessage(conversation);
+    emitToConversationParticipants(conversation, 'chat:message', {
+      conversationId,
+      message: systemMessage,
+    });
     emitToSupportAgents('support:queue_updated', {
       conversationId,
       status: conversation.status,
@@ -220,18 +257,22 @@ export const updateConversationStatus = catchAsync(
   async (req: Request, res: Response): Promise<void> => {
     const actor = extractChatActor(req);
     const conversationId = req.params.id as string;
-    const conversation = await chatService.updateConversationStatus(
-      actor,
-      conversationId,
-      req.body.status
-    );
+    const { conversation, systemMessage } =
+      await chatService.updateConversationStatus(
+        actor,
+        conversationId,
+        req.body.status
+      );
 
     emitToConversationParticipants(conversation, 'chat:status_updated', {
       conversationId,
       status: conversation.status,
       mode: conversation.mode,
     });
-    await emitLatestSystemMessage(conversation);
+    emitToConversationParticipants(conversation, 'chat:message', {
+      conversationId,
+      message: systemMessage,
+    });
     emitToSupportAgents('support:queue_updated', {
       conversationId,
       status: conversation.status,
@@ -259,10 +300,23 @@ export const markConversationRead = catchAsync(
 
 export const mergeGuestChat = catchAsync(
   async (req: Request, res: Response): Promise<void> => {
-    const mergedCount = await chatService.mergeGuestConversations(
-      String(req.user!._id),
-      req.body.guestId
-    );
+    const token = req.body?.guestToken || extractGuestTokenFromRequest(req);
+    const guestId = verifyGuestToken(token);
+    if (!guestId) {
+      throw new AppError(
+        'Valid signed guest token is required to merge chat',
+        401
+      );
+    }
+
+    const { mergedCount, conversationIds } =
+      await chatService.mergeGuestConversations(String(req.user!._id), guestId);
+
+    if (mergedCount > 0) {
+      evictGuestFromRooms(guestId, conversationIds);
+    }
+    clearGuestTokenCookie(res);
+
     sendSuccess(res, { mergedConversations: mergedCount }, 200);
   }
 );

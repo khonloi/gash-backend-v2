@@ -4,6 +4,7 @@
 export const slugify = (text: string): string => {
   return text
     .toString()
+    .replace(/[Đđ]/g, 'd')
     .normalize('NFD') // Normalize accented characters (e.g. é -> e + accent)
     .replace(/[\u0300-\u036f]/g, '') // Remove accent marks
     .toLowerCase()

@@ -2,14 +2,32 @@ import { Socket } from 'socket.io';
 import { verifyUserFromToken } from '../middlewares/auth.js';
 import { IUser, UserRole } from '../types/index.js';
 import { logger } from '../config/logger.js';
+import { GUEST_COOKIE_NAME, verifyGuestToken } from '../utils/guestToken.js';
+
+export interface SocketData {
+  user?: IUser;
+  userId?: string;
+  guestId?: string;
+  role: UserRole | 'guest';
+}
 
 export interface AuthenticatedSocket extends Socket {
-  data: {
-    user?: IUser;
-    userId?: string;
-    guestId?: string;
-    role: UserRole | 'guest';
-  };
+  data: SocketData;
+}
+
+function parseCookieFromHandshake(
+  cookieHeader: string | undefined,
+  name: string
+): string | undefined {
+  if (!cookieHeader) return undefined;
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = cookieHeader.match(new RegExp(`(?:^|;\\s*)${escaped}=([^;]*)`));
+  if (!match) return undefined;
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return undefined;
+  }
 }
 
 export const socketAuthMiddleware = async (
@@ -22,8 +40,8 @@ export const socketAuthMiddleware = async (
 
     let token: string | undefined;
     if (typeof authHeader === 'string') {
-      token = authHeader.startsWith('Bearer ')
-        ? authHeader.slice(7).trim()
+      token = /^Bearer\s+(\S+)$/i.test(authHeader.trim())
+        ? authHeader.trim().replace(/^Bearer\s+/i, '')
         : authHeader.trim();
     }
 
@@ -36,21 +54,25 @@ export const socketAuthMiddleware = async (
         return next();
       } catch (authErr) {
         logger.warn('Socket token verification failed:', authErr);
+        // Do not silently downgrade an explicitly invalid/expired JWT to guest
+        return next(new Error('Invalid or expired authentication token.'));
       }
     }
 
-    // Check for guest ID
-    const guestIdRaw =
-      socket.handshake.auth?.guestId ||
-      socket.handshake.headers?.['x-guest-id'];
+    const rawGuestToken =
+      (typeof socket.handshake.auth?.guestToken === 'string'
+        ? socket.handshake.auth.guestToken
+        : undefined) ||
+      (typeof socket.handshake.headers?.['x-guest-token'] === 'string'
+        ? socket.handshake.headers['x-guest-token']
+        : undefined) ||
+      parseCookieFromHandshake(
+        socket.handshake.headers?.cookie,
+        GUEST_COOKIE_NAME
+      );
 
-    const guestId = Array.isArray(guestIdRaw)
-      ? guestIdRaw[0]
-      : typeof guestIdRaw === 'string'
-        ? guestIdRaw.trim()
-        : undefined;
-
-    if (guestId && guestId.length >= 8 && guestId.length <= 128) {
+    const guestId = verifyGuestToken(rawGuestToken);
+    if (guestId) {
       socket.data.guestId = guestId;
       socket.data.role = 'guest';
       return next();
@@ -58,7 +80,7 @@ export const socketAuthMiddleware = async (
 
     return next(
       new Error(
-        'Authentication required. Please provide a valid Bearer token or guestId.'
+        'Authentication required. Please provide a valid Bearer token or signed guestToken.'
       )
     );
   } catch (err) {

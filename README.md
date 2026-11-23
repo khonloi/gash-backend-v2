@@ -105,35 +105,38 @@ gash-backend-v2/
 │   │   ├── productController.ts# Product catalog, search, stock adjustments, aggregation
 │   │   └── userController.ts # User profile, addresses, admin account operations
 │   ├── middlewares/          # Express middleware pipeline
-│   │   ├── auth.ts           # Bearer JWT verification (protect) and RBAC guard (restrictTo)
+│   │   ├── auth.ts           # Bearer JWT verification (protect/optionalAuth) and RBAC guard
 │   │   ├── errorHandler.ts   # Centralized error handler (operational vs. programming errors)
 │   │   ├── mongoSanitize.ts  # Express 5-compatible NoSQL query injection prevention
+│   │   ├── requestId.ts      # Validated X-Request-Id correlation middleware
 │   │   └── validate.ts       # Generic Zod middleware for params, query, and body
 │   ├── models/               # Mongoose schemas, hooks, methods, and virtuals
-│   │   ├── Cart.ts           # Cart schema with subdocument items and virtual price totals
-│   │   ├── Product.ts        # Product schema with pre-save slugify and virtual discounts
-│   │   └── User.ts           # User schema with bcrypt hooks, tokens, and address subdocs
+│   │   ├── Cart.ts           # Cart schema with subdocument items and integer-cent price totals
+│   │   ├── Conversation.ts   # Chat conversation state, AI/support modes, guest/user indexes
+│   │   ├── Message.ts        # Chat messages with product/order context cards
+│   │   ├── Order.ts          # Order state machine, payment status, idempotency keys
+│   │   ├── Product.ts        # Product schema with slug, seller ownership & per-SKU variants
+│   │   ├── RefreshToken.ts   # Separate TTL-indexed refresh token collection (family rotation)
+│   │   └── User.ts           # User schema with bcrypt hooks, tokenVersion & address subdocs
 │   ├── routes/               # API route definitions & middleware wiring
 │   │   ├── authRoutes.ts     # /api/v1/auth routes
 │   │   ├── cartRoutes.ts     # /api/v1/cart routes
+│   │   ├── chatRoutes.ts     # /api/v1/chat routes
+│   │   ├── orderRoutes.ts    # /api/v1/orders routes
 │   │   ├── productRoutes.ts  # /api/v1/products routes
 │   │   └── userRoutes.ts     # /api/v1/users routes
 │   ├── services/             # Core business logic layer (controller-decoupled)
-│   │   ├── authService.ts    # Authentication workflows, token rotation, session eviction
-│   │   ├── cartService.ts    # Cart management, item adjustments, and merge workflows
-│   │   ├── productService.ts # Product CRUD, stock adjustment logic, aggregation queries
+│   │   ├── aiChatService.ts  # Gemini tool-calling assistant with structured fallback
+│   │   ├── authService.ts    # Authentication workflows, cookie token rotation, breach detection
+│   │   ├── cartService.ts    # Cart management, per-SKU variant checks, and guest merge
+│   │   ├── chatService.ts    # Chat orchestration, handoff, agent assignment & history merge
+│   │   ├── inventoryService.ts # Atomic stock reservation and Saga compensation
+│   │   ├── orderService.ts   # Checkout transactions/Saga, state transitions, cancellations
+│   │   ├── productService.ts # Product CRUD, stock adjustments, owner checks, stats
 │   │   └── userService.ts    # Profile management, address logic, admin operations
+│   ├── socket/               # Socket.IO server setup, JWT/guest handshake auth & handlers
 │   ├── types/                # Ambient and explicit TypeScript interfaces / models
-│   │   ├── index.ts          # Central type exports
-│   │   ├── cart.ts           # ICart, ICartItem types
-│   │   ├── product.ts        # IProduct, ProductStatus, inventory types
-│   │   └── user.ts           # IUser, IAddress, IRefreshToken, UserRole
-│   ├── utils/                # Reusable utilities & helpers
-│   │   ├── apiFeatures.ts    # Filter, sort, limit, search, and pagination engine
-│   │   ├── AppError.ts       # Operational error subclass with HTTP status codes
-│   │   ├── catchAsync.ts     # Controller wrapper eliminating redundant try/catch blocks
-│   │   ├── crypto.ts         # Crypto-secure random token generation and SHA-256 hashing
-│   │   └── jwt.ts            # JWT signing, verification, and decoding helpers
+│   ├── utils/                # Reusable utilities & helpers (APIFeatures, cookies, guestToken, jwt)
 │   ├── validations/          # Zod validation schemas
 │   │   ├── authValidation.ts # Schemas for register, login, refresh, password reset
 │   │   ├── cartValidation.ts # Schemas for add item, update quantity, and merge
@@ -207,15 +210,19 @@ The server will launch with `tsx watch` on `http://localhost:5000` with hot-relo
 
 | Variable                 | Required |    Default    | Description                                               | Example                                    |
 | :----------------------- | :------: | :-----------: | :-------------------------------------------------------- | :----------------------------------------- |
-| `NODE_ENV`               |   Yes    | `development` | Runtime environment (`development`, `production`, `test`) | `development`                              |
-| `PORT`                   |    No    |    `5000`     | Port on which the Express server listens                  | `5000`                                     |
-| `MONGO_URI`              |   Yes    |       —       | MongoDB connection string                                 | `mongodb://localhost:27017/gash-ecommerce` |
-| `JWT_SECRET`             |   Yes    |       —       | Secret key used to sign and verify Access Tokens          | `super_secret_jwt_access_key_123!`         |
-| `JWT_ACCESS_EXPIRES_IN`  |    No    |     `15m`     | Lifetime duration for access tokens                       | `15m`                                      |
-| `JWT_REFRESH_SECRET`     |    No    | `JWT_SECRET`  | Secret key used to sign Refresh Tokens                    | `super_secret_jwt_refresh_key_456!`        |
-| `JWT_REFRESH_EXPIRES_IN` |    No    |     `7d`      | Lifetime duration for refresh tokens                      | `7d`                                       |
-| `BCRYPT_COST`            |    No    |     `12`      | Bcrypt hashing cost salt rounds (10–14)                   | `12`                                       |
-| `CORS_ORIGIN`            |    No    |      `*`      | Whitelisted frontend origin URL for CORS                  | `http://localhost:3000`                    |
+| `NODE_ENV`                  |   Yes    |    `development`     | Runtime environment (`development`, `production`, `test`)         | `development`                                    |
+| `PORT`                      |    No    |        `5000`        | Port on which the Express server listens                          | `5000`                                           |
+| `MONGO_URI`                 |   Yes    |          —           | MongoDB connection string (non-localhost in production)           | `mongodb://127.0.0.1:27017/gash-backend`         |
+| `JWT_SECRET`                |   Yes    |          —           | Secret key used to sign/verify Access Tokens (>=32 chars in prod) | `super_secret_jwt_access_key_1234567890!`        |
+| `JWT_REFRESH_SECRET`        |    No    |     `JWT_SECRET`     | Optional dedicated Refresh Token secret (>=32 chars in prod)      | `super_secret_jwt_refresh_key_0987654321!`       |
+| `JWT_ACCESS_EXPIRES_IN`     |    No    |        `15m`         | Lifetime duration for access tokens                               | `15m`                                            |
+| `JWT_REFRESH_EXPIRES_IN`    |    No    |         `7d`         | Lifetime duration for refresh tokens                              | `7d`                                             |
+| `BCRYPT_COST`               |    No    |         `12`         | Bcrypt hashing cost salt rounds (4–16, default 12)                | `12`                                             |
+| `FRONTEND_URL`              |    No    | `http://localhost:3000` | Primary allowed frontend origin for CORS                       | `http://localhost:3000`                          |
+| `ALLOWED_ORIGINS`           |    No    |          —           | Comma-separated allowlist of CORS origins                         | `http://localhost:3000,http://127.0.0.1:3000`    |
+| `GEMINI_API_KEY`            |    No    |          —           | Google Gemini API key for AI shopping assistant                   | `your_gemini_api_key_optional_in_dev`            |
+| `GEMINI_MODEL`              |    No    |  `gemini-2.5-flash`  | Gemini model identifier                                           | `gemini-2.5-flash`                               |
+| `CHAT_MAX_CONTEXT_MESSAGES` |    No    |         `15`         | Max prior chat messages passed as AI context window               | `15`                                             |
 
 ---
 
@@ -273,8 +280,8 @@ The system implements the **OAuth 2.0 / IETF RFC 6749** recommended refresh toke
 
 | Endpoint Group                             | Public | `customer` |  `seller`   |  `admin`  |
 | :----------------------------------------- | :----: | :--------: | :---------: | :-------: |
-| **Browse / Search Products**               |  Yes   |    Yes     |     Yes     |    Yes    |
-| **View Product Statistics (`/stats`)**     |  Yes   |    Yes     |     Yes     |    Yes    |
+| **Browse / Search Active Products**        |  Yes   |    Yes     |     Yes     |    Yes    |
+| **View Product Statistics (`/stats`)**     |   No   |     No     |     Yes     |    Yes    |
 | **Register, Login, Forgot Password**       |  Yes   |    Yes     |     Yes     |    Yes    |
 | **Manage Own Profile (`/me`)**             |   No   |    Yes     |     Yes     |    Yes    |
 | **Manage Own Addresses (`/me/addresses`)** |   No   |    Yes     |     Yes     |    Yes    |
@@ -402,16 +409,16 @@ GET /api/v1/products?search=wireless+headphones
 
 ### 1. Authentication (`/api/v1/auth`)
 
-| Method  | Endpoint                             |  Access   | Description                                    |
-| :------ | :----------------------------------- | :-------: | :--------------------------------------------- |
-| `POST`  | `/api/v1/auth/register`              |  Public   | Register a new user account                    |
-| `POST`  | `/api/v1/auth/login`                 |  Public   | Authenticate user and receive token pair       |
-| `POST`  | `/api/v1/auth/refresh-token`         |  Public   | Rotate refresh token and obtain new token pair |
-| `POST`  | `/api/v1/auth/logout`                | Protected | Invalidate current refresh token session       |
-| `POST`  | `/api/v1/auth/logout-all`            | Protected | Invalidate all sessions across all devices     |
-| `POST`  | `/api/v1/auth/forgot-password`       |  Public   | Generate and send password reset token         |
-| `PATCH` | `/api/v1/auth/reset-password/:token` |  Public   | Reset password using one-time token            |
-| `GET`   | `/api/v1/auth/verify-email/:token`   |  Public   | Verify email address using token               |
+| Method | Endpoint                       |     Access      | Description                                                |
+| :----- | :----------------------------- | :-------------: | :--------------------------------------------------------- |
+| `POST` | `/api/v1/auth/register`        |     Public      | Register a new user account                                |
+| `POST` | `/api/v1/auth/login`           |     Public      | Authenticate user, return access token & HttpOnly cookie   |
+| `POST` | `/api/v1/auth/refresh-token`   |  Cookie (`refreshToken`) | Rotate HttpOnly refresh token and obtain new access token |
+| `POST` | `/api/v1/auth/logout`          | Optional Bearer + Cookie | Invalidate current refresh token session          |
+| `POST` | `/api/v1/auth/logout-all`      |    Protected    | Invalidate all sessions across all devices                 |
+| `POST` | `/api/v1/auth/forgot-password` |     Public      | Generate and send password reset token                     |
+| `POST` | `/api/v1/auth/reset-password`  |     Public      | Reset password using `{ token, password, passwordConfirm }` |
+| `POST` | `/api/v1/auth/verify-email`    |     Public      | Verify email address using `{ token }` in request body     |
 
 #### Register
 
@@ -440,7 +447,7 @@ Content-Type: application/json
 }
 ```
 
-**Response (200 OK)**:
+**Response (200 OK)** _(sets `Set-Cookie: refreshToken=...; HttpOnly; SameSite=Lax; Path=/api/v1/auth`)_:
 
 ```json
 {
@@ -456,8 +463,7 @@ Content-Type: application/json
       "isActive": true
     },
     "tokens": {
-      "accessToken": "eyJhbGciOiJIUzI1Ni...",
-      "refreshToken": "eyJhbGciOiJIUzI1Ni..."
+      "accessToken": "eyJhbGciOiJIUzI1Ni..."
     }
   }
 }
@@ -467,11 +473,7 @@ Content-Type: application/json
 
 ```http
 POST /api/v1/auth/refresh-token
-Content-Type: application/json
-
-{
-  "refreshToken": "eyJhbGciOiJIUzI1Ni..."
-}
+Cookie: refreshToken=<httpOnlyCookie>
 ```
 
 ---
@@ -582,7 +584,7 @@ Content-Type: application/json
 | `GET`    | `/api/v1/products/:id`        |     Public     | Get single product by MongoDB ObjectId       |
 | `GET`    | `/api/v1/products/slug/:slug` |     Public     | Get single product by URL-friendly slug      |
 | `GET`    | `/api/v1/products/featured`   |     Public     | Retrieve curated featured products           |
-| `GET`    | `/api/v1/products/stats`      |     Public     | Product catalog statistics and aggregations  |
+| `GET`    | `/api/v1/products/stats`      | Seller / Admin | Product catalog statistics and aggregations  |
 | `POST`   | `/api/v1/products`            | Seller / Admin | Create a new product                         |
 | `PATCH`  | `/api/v1/products/:id`        | Seller / Admin | Update product details (ownership verified)  |
 | `PATCH`  | `/api/v1/products/:id/stock`  | Seller / Admin | Adjust inventory level                       |
@@ -596,7 +598,7 @@ Authorization: Bearer <sellerOrAdminToken>
 Content-Type: application/json
 
 {
-  "title": "Noise-Cancelling Wireless Headphones",
+  "name": "Noise-Cancelling Wireless Headphones",
   "description": "Premium over-ear wireless headphones with active noise cancellation and 30-hour battery life.",
   "price": 249.99,
   "compareAtPrice": 299.99,
@@ -604,12 +606,16 @@ Content-Type: application/json
   "subcategory": "Audio",
   "brand": "AcousticPro",
   "sku": "AP-WH-001",
-  "stock": 50,
+  "quantity": 50,
   "tags": ["audio", "wireless", "bluetooth"],
+  "variants": [
+    { "sku": "AP-WH-001-BLK", "color": "Black", "size": "One Size", "stock": 30 },
+    { "sku": "AP-WH-001-SLV", "color": "Silver", "size": "One Size", "stock": 20 }
+  ],
   "images": [
     {
       "url": "https://cdn.example.com/products/headphones-1.jpg",
-      "alt": "Side profile of headphones",
+      "altText": "Side profile of headphones",
       "isPrimary": true
     }
   ]
@@ -719,8 +725,9 @@ _Supports dual transports: Socket.IO WebSocket (real-time chat, streaming, typin
 
 | Method  | Endpoint                                  |    Access     | Description                                                              |
 | :------ | :---------------------------------------- | :-----------: | :----------------------------------------------------------------------- |
-| `POST`  | `/api/v1/chat/conversations`              | Public/Guest  | Start a conversation (defaults to AI Assistant mode)                     |
-| `GET`   | `/api/v1/chat/conversations`              | Public/Guest  | List conversations for caller, or support queue for `admin`/`seller`     |
+| `POST`  | `/api/v1/chat/guest-session`              |    Public     | Issue a signed `guestToken` and HttpOnly `gash_guest` cookie             |
+| `POST`  | `/api/v1/chat/conversations`              | User / Guest  | Start a conversation (defaults to AI Assistant mode)                     |
+| `GET`   | `/api/v1/chat/conversations`              | User / Guest  | List conversations for caller, or support queue for `admin`/`seller`     |
 | `GET`   | `/api/v1/chat/conversations/:id`          | Conversation  | Get single conversation metadata and unread counts                       |
 | `GET`   | `/api/v1/chat/conversations/:id/messages` | Conversation  | Paginated messages with populated Product/Order cards                    |
 | `POST`  | `/api/v1/chat/conversations/:id/messages` | Conversation  | Send message (triggers AI reply if in `bot_active` mode)                 |
@@ -728,11 +735,11 @@ _Supports dual transports: Socket.IO WebSocket (real-time chat, streaming, typin
 | `PATCH` | `/api/v1/chat/conversations/:id/assign`   | Admin/Seller  | Assign conversation to support agent                                     |
 | `PATCH` | `/api/v1/chat/conversations/:id/status`   | Conversation  | Update status (`bot_active`, `queued`, `assigned`, `resolved`, `closed`) |
 | `PATCH` | `/api/v1/chat/conversations/:id/read`     | Conversation  | Mark messages as read and reset unread counters                          |
-| `POST`  | `/api/v1/chat/merge`                      | Authenticated | Merge guest chat history into authenticated user account                 |
+| `POST`  | `/api/v1/chat/merge`                      | Authenticated | Merge signed guest chat session history into user account                 |
 
 #### Real-Time Socket.IO Events
 
-Connect to `ws://localhost:5000` with `auth: { token: "<jwt>" }` or `auth: { guestId: "<uuid>" }`:
+Connect to `ws://localhost:5000` with `auth: { token: "<jwt>" }` or `auth: { guestToken: "<signed_guest_token>" }` (or `gash_guest` cookie):
 
 - **Client to Server**:
   - `chat:join`: `{ conversationId }` — Join conversation room.
@@ -785,9 +792,8 @@ Errors are classified into **Operational Errors** (known, expected issues like v
 
 Structured logging is managed using [Winston](https://github.com/winstonjs/winston):
 
-- **Console Output**: Formatted with colorization and timestamp for development readability.
-- **File Transports**: Automatically writes `error.log` (level: `error`) and `combined.log` (all levels) in production.
-- **HTTP Access Logs**: Integrated via `morgan` middleware in development.
+- **Console Output**: Colorized readable logs in development; structured JSON to stdout in production (container-friendly, no local file writes required).
+- **HTTP Access Logs**: Integrated via `morgan` middleware (`dev` format in development; `combined` with `requestId` in production).
 
 ---
 

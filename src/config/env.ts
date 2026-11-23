@@ -17,8 +17,18 @@ const baseEnvSchema = z.object({
     .string()
     .min(16, 'JWT_SECRET must be at least 16 characters')
     .default('your_jwt_secret_key_change_in_production'),
-  JWT_ACCESS_EXPIRES_IN: z.string().default('15m'),
-  JWT_REFRESH_EXPIRES_IN: z.string().default('7d'),
+  JWT_REFRESH_SECRET: z
+    .string()
+    .min(16, 'JWT_REFRESH_SECRET must be at least 16 characters')
+    .optional(),
+  JWT_ACCESS_EXPIRES_IN: z
+    .string()
+    .regex(/^\d+(ms|s|m|h|d|w)$/i, 'Invalid JWT_ACCESS_EXPIRES_IN duration')
+    .default('15m'),
+  JWT_REFRESH_EXPIRES_IN: z
+    .string()
+    .regex(/^\d+(ms|s|m|h|d|w)$/i, 'Invalid JWT_REFRESH_EXPIRES_IN duration')
+    .default('7d'),
   BCRYPT_COST: z.coerce.number().min(4).max(16).default(12),
   FRONTEND_URL: z.string().default('http://localhost:3000'),
   ALLOWED_ORIGINS: z.string().optional(),
@@ -39,6 +49,19 @@ const envSchema = baseEnvSchema.superRefine((data, ctx) => {
         path: ['JWT_SECRET'],
         message:
           'In production, JWT_SECRET must be explicitly set and be at least 32 characters long.',
+      });
+    }
+
+    if (
+      data.JWT_REFRESH_SECRET &&
+      (data.JWT_REFRESH_SECRET.length < 32 ||
+        data.JWT_REFRESH_SECRET === data.JWT_SECRET)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['JWT_REFRESH_SECRET'],
+        message:
+          'In production, JWT_REFRESH_SECRET must be at least 32 characters and differ from JWT_SECRET.',
       });
     }
 

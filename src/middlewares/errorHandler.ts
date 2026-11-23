@@ -12,6 +12,7 @@ interface MongoCastError extends Error {
 interface MongoDuplicateKeyError extends Error {
   code: number;
   errmsg?: string;
+  keyValue?: Record<string, unknown>;
 }
 
 interface MongoValidationErrorItem {
@@ -31,7 +32,9 @@ export interface AppErrorLike extends Partial<Error> {
   path?: string;
   value?: unknown;
   errmsg?: string;
+  keyValue?: Record<string, unknown>;
   errors?: Record<string, MongoValidationErrorItem>;
+  type?: string;
 }
 
 export const handleCastErrorDB = (
@@ -44,6 +47,13 @@ export const handleCastErrorDB = (
 export const handleDuplicateFieldsDB = (
   err: MongoDuplicateKeyError | AppErrorLike
 ): AppError => {
+  if (err.keyValue && Object.keys(err.keyValue).length > 0) {
+    const [field, val] = Object.entries(err.keyValue)[0];
+    return new AppError(
+      `Duplicate field value for "${field}": "${String(val)}". Please use another value!`,
+      400
+    );
+  }
   const match = err.errmsg?.match(/(["'])(\\?.)*?\1/);
   const value = match ? match[0] : 'unknown';
   const message = `Duplicate field value: ${value}. Please use another value!`;
@@ -64,33 +74,56 @@ export const handleJWTError = (): AppError =>
 export const handleJWTExpiredError = (): AppError =>
   new AppError('Your token has expired. Please log in again.', 401);
 
-export const sendErrorDev = (err: AppErrorLike, res: Response): void => {
+export const sendErrorDev = (
+  err: AppErrorLike,
+  res: Response,
+  requestId?: string
+): void => {
   res.status(err.statusCode || 500).json({
     status: err.status || 'error',
+    ...(requestId ? { requestId } : {}),
     error: err,
     message: err.message,
     stack: err.stack,
   });
 };
 
-export const sendErrorProd = (err: AppErrorLike, res: Response): void => {
+export const sendErrorProd = (
+  err: AppErrorLike,
+  res: Response,
+  requestId?: string
+): void => {
   if (err.isOperational) {
     res.status(err.statusCode || 500).json({
       status: err.status || 'error',
+      ...(requestId ? { requestId } : {}),
       message: err.message,
     });
   } else {
-    logger.error('ERROR', err);
+    logger.error('ERROR', { requestId, err });
     res.status(500).json({
       status: 'error',
+      ...(requestId ? { requestId } : {}),
       message: 'Something went wrong!',
     });
   }
 };
 
+function normalizeKnownErrors(err: AppErrorLike): AppErrorLike {
+  if (err.name === 'CastError') return handleCastErrorDB(err);
+  if (err.code === 11000) return handleDuplicateFieldsDB(err);
+  if (err.name === 'ValidationError') return handleValidationErrorDB(err);
+  if (err.name === 'JsonWebTokenError') return handleJWTError();
+  if (err.name === 'TokenExpiredError') return handleJWTExpiredError();
+  if (err.name === 'SyntaxError' && err.type === 'entity.parse.failed') {
+    return new AppError('Invalid JSON payload', 400);
+  }
+  return err;
+}
+
 export const globalErrorHandler = (
   err: AppErrorLike | unknown,
-  _req: Request,
+  req: Request,
   res: Response,
   _next: NextFunction
 ): void => {
@@ -100,22 +133,16 @@ export const globalErrorHandler = (
   errorObj.statusCode = errorObj.statusCode || 500;
   errorObj.status = errorObj.status || 'error';
 
+  const normalized = normalizeKnownErrors({
+    ...errorObj,
+    name: errorObj.name,
+    message: errorObj.message,
+    stack: errorObj.stack,
+  });
+
   if (env.NODE_ENV === 'production') {
-    let error: AppErrorLike = {
-      ...errorObj,
-      name: errorObj.name,
-      message: errorObj.message,
-    };
-
-    if (error.name === 'CastError') error = handleCastErrorDB(error);
-    if (error.code === 11000) error = handleDuplicateFieldsDB(error);
-    if (error.name === 'ValidationError')
-      error = handleValidationErrorDB(error);
-    if (error.name === 'JsonWebTokenError') error = handleJWTError();
-    if (error.name === 'TokenExpiredError') error = handleJWTExpiredError();
-
-    sendErrorProd(error, res);
+    sendErrorProd(normalized, res, req.id);
   } else {
-    sendErrorDev(errorObj, res);
+    sendErrorDev(normalized, res, req.id);
   }
 };

@@ -1,11 +1,11 @@
 import { Request, Response, NextFunction, RequestHandler } from 'express';
-import { ZodTypeAny, ZodError } from 'zod';
+import { z, ZodError } from 'zod';
 import { AppError } from '../utils/AppError.js';
 
 type RequestLocation = 'body' | 'query' | 'params';
 
 export const validate = (
-  schema: ZodTypeAny,
+  schema: z.ZodType,
   source: RequestLocation = 'body'
 ): RequestHandler => {
   return (req: Request, _res: Response, next: NextFunction): void => {
@@ -23,14 +23,22 @@ export const validate = (
       return next(new AppError(message, 400));
     }
 
-    // In Express 5, req.query is a getter, so mutate keys directly instead of reassigning req.query
     if (source === 'query') {
-      const queryData = result.data as Record<string, unknown>;
-      for (const [key, value] of Object.entries(queryData)) {
-        (req.query as Record<string, unknown>)[key] = value;
-      }
+      // In Express 5, req.query is a prototype getter; materialize the parsed object on req
+      // so defaults, coercions, and stripped unknown keys persist for controllers.
+      Object.defineProperty(req, 'query', {
+        value: result.data,
+        writable: true,
+        configurable: true,
+        enumerable: true,
+      });
+    } else if (source === 'params') {
+      req.params = {
+        ...req.params,
+        ...(result.data as typeof req.params),
+      };
     } else {
-      req[source] = result.data;
+      req.body = result.data;
     }
 
     next();

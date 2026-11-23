@@ -22,9 +22,41 @@ import {
   validateOrderStatusTransition,
 } from './orderStateMachine.js';
 
+const VALID_PAYMENT_STATUS_TRANSITIONS: Record<PaymentStatus, PaymentStatus[]> =
+  {
+    pending: ['paid', 'failed'],
+    failed: ['pending', 'paid'],
+    paid: ['refunded'],
+    refunded: [],
+  };
+
+function toCents(amount: number): number {
+  return Math.round(amount * 100);
+}
+
+function fromCents(cents: number): number {
+  return cents / 100;
+}
+
+function isDuplicateOrderNumberError(err: unknown): boolean {
+  const errObj = err as { code?: number; keyPattern?: Record<string, unknown> };
+  return errObj?.code === 11000 && Boolean(errObj?.keyPattern?.orderNumber);
+}
+
+async function checkTransactionSupport(): Promise<boolean> {
+  try {
+    const db = mongoose.connection.db;
+    if (!db) return false;
+    const hello = await db.admin().command({ hello: 1 });
+    return Boolean(hello.setName || hello.msg === 'isdbgrid');
+  } catch {
+    return false;
+  }
+}
+
 export class OrderService {
   /**
-   * Create an order from user cart or explicit items
+   * Create an order from user cart or explicit items with idempotency support
    */
   async createOrder(
     userId: string | undefined,
@@ -34,46 +66,62 @@ export class OrderService {
       assertObjectId(userId, 'user ID');
     }
 
-    let itemsToProcess: ProcessOrderItemInput[] = [];
+    if (data.idempotencyKey) {
+      const existing = await Order.findOne({
+        idempotencyKey: data.idempotencyKey,
+        ...(userId ? { user: userId } : {}),
+      });
+      if (existing) {
+        return existing;
+      }
+    }
 
-    // 1) Determine items to process: from input or from user's active cart
-    if (data.items && data.items.length > 0) {
-      itemsToProcess = data.items;
-    } else if (userId) {
-      const cart = await Cart.findOne({ user: userId });
+    const usedCart = !(data.items && data.items.length > 0);
+    if (!usedCart && data.items!.length === 0) {
+      throw new AppError('Order must contain at least one item', 400);
+    }
+
+    const loadCartItems = async (
+      session?: mongoose.ClientSession
+    ): Promise<ProcessOrderItemInput[]> => {
+      if (!usedCart) {
+        return data.items!;
+      }
+      if (!userId) {
+        throw new AppError('Order must contain at least one item', 400);
+      }
+      const cart = await Cart.findOne({ user: userId }).session(
+        session ?? null
+      );
       if (!cart || cart.items.length === 0) {
         throw new AppError(
           'Your cart is empty. Please add items before placing an order.',
           400
         );
       }
-      itemsToProcess = cart.items.map((item) => ({
+      return cart.items.map((item) => ({
         productId: item.product.toString(),
         quantity: item.quantity,
         size: item.size,
         color: item.color,
       }));
-    }
+    };
 
-    if (itemsToProcess.length === 0) {
-      throw new AppError('Order must contain at least one item', 400);
-    }
-
-    // Helper to calculate totals with 2-decimal rounding
     const calculateTotals = (items: IOrderItem[]) => {
-      const subtotal =
-        Math.round(
-          (items.reduce((sum, item) => sum + item.price * item.quantity, 0) +
-            Number.EPSILON) *
-            100
-        ) / 100;
+      const subtotalCents = items.reduce(
+        (sum, item) => sum + toCents(item.price) * item.quantity,
+        0
+      );
       const shippingFee =
         data.shippingMethod === 'express'
           ? SHIPPING_FEES.EXPRESS
           : SHIPPING_FEES.STANDARD;
-      const total =
-        Math.round((subtotal + shippingFee + Number.EPSILON) * 100) / 100;
-      return { subtotal, shippingFee, total };
+      const totalCents = subtotalCents + toCents(shippingFee);
+      return {
+        subtotal: fromCents(subtotalCents),
+        shippingFee,
+        total: fromCents(totalCents),
+      };
     };
 
     const buildOrderPayload = (
@@ -93,39 +141,51 @@ export class OrderService {
       contactEmail: data.contactEmail || undefined,
       contactPhone: data.contactPhone || undefined,
       notes: data.notes,
+      ...(data.idempotencyKey ? { idempotencyKey: data.idempotencyKey } : {}),
     });
 
-    // 2) Attempt multi-document ACID transaction if MongoDB topology is a replica set / sharded cluster
-    let order: IOrder | undefined;
-
-    const topologyType = (
-      mongoose.connection.getClient() as unknown as {
-        topology?: { description?: { type?: string } };
+    const createOrderWithRetry = async (
+      payload: ReturnType<typeof buildOrderPayload>,
+      session?: mongoose.ClientSession
+    ): Promise<IOrder> => {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          if (session) {
+            const [created] = await Order.create([payload], { session });
+            return created;
+          }
+          return await Order.create(payload);
+        } catch (err) {
+          if (isDuplicateOrderNumberError(err) && attempt < 2) {
+            continue;
+          }
+          throw err;
+        }
       }
-    )?.topology?.description?.type;
+      throw new AppError('Failed to generate unique order number', 500);
+    };
 
-    const supportsTransactions =
-      topologyType === 'ReplicaSetWithPrimary' ||
-      topologyType === 'Sharded' ||
-      topologyType === 'LoadBalanced';
+    // Attempt multi-document ACID transaction when MongoDB supports transactions
+    let order: IOrder | undefined;
+    const supportsTransactions = await checkTransactionSupport();
 
     if (supportsTransactions) {
       let session: mongoose.ClientSession | null = null;
       try {
         session = await mongoose.startSession();
         await session.withTransaction(async () => {
+          const itemsToProcess = await loadCartItems(session!);
           const orderItems = await inventoryService.processOrderItems(
             itemsToProcess,
             session!
           );
           const totals = calculateTotals(orderItems);
-          const [createdOrder] = await Order.create(
-            [buildOrderPayload(orderItems, totals)],
-            { session: session! }
+          order = await createOrderWithRetry(
+            buildOrderPayload(orderItems, totals),
+            session!
           );
-          order = createdOrder;
 
-          if (userId) {
+          if (usedCart && userId) {
             await Cart.findOneAndUpdate(
               { user: userId },
               { items: [] },
@@ -138,16 +198,13 @@ export class OrderService {
         const isStandaloneUnsupported =
           errorMsg.includes('replica set') ||
           errorMsg.includes('Transaction numbers are only allowed') ||
-          errorMsg.includes('retryable writes') ||
           errorMsg.includes('retryable write') ||
           errorMsg.includes('standalone') ||
           (err as { codeName?: string })?.codeName === 'IllegalOperation';
 
         if (!isStandaloneUnsupported) {
-          // Validation error or stock error inside transaction
           throw err;
         }
-        // Fall back to Saga pattern below if transaction unsupported
         order = undefined;
       } finally {
         if (session) {
@@ -160,16 +217,13 @@ export class OrderService {
       return order;
     }
 
-    // 3) Fallback: Saga compensation pattern for standalone MongoDB instances
+    // Fallback: Saga compensation pattern for standalone MongoDB instances
+    const itemsToProcess = await loadCartItems();
     const orderItems = await inventoryService.processOrderItems(itemsToProcess);
     const totals = calculateTotals(orderItems);
 
     try {
-      order = await Order.create(buildOrderPayload(orderItems, totals));
-
-      if (userId) {
-        await Cart.findOneAndUpdate({ user: userId }, { items: [] });
-      }
+      order = await createOrderWithRetry(buildOrderPayload(orderItems, totals));
     } catch (createErr) {
       try {
         await inventoryService.restoreInventory(orderItems);
@@ -183,6 +237,19 @@ export class OrderService {
         );
       }
       throw createErr;
+    }
+
+    // Clear cart AFTER order creation committed (outside rollback try/catch so a cart failure never restores stock)
+    if (usedCart && userId) {
+      await Cart.updateOne({ user: userId }, { $set: { items: [] } }).catch(
+        (cartErr) => {
+          logger.warn('Failed to clear cart after order creation:', {
+            userId,
+            orderId: order?._id,
+            cartErr,
+          });
+        }
+      );
     }
 
     return order;
@@ -214,6 +281,89 @@ export class OrderService {
   }
 
   /**
+   * Shared atomic cancellation + stock restoration helper
+   */
+  private async executeOrderCancellation(
+    order: IOrder,
+    cancelReason: string,
+    allowedCurrentStatuses: OrderStatus[]
+  ): Promise<IOrder> {
+    const supportsTransactions = await checkTransactionSupport();
+
+    const performAtomicCancel = async (
+      session?: mongoose.ClientSession
+    ): Promise<IOrder> => {
+      const now = new Date();
+      const updatedOrder = await Order.findOneAndUpdate(
+        {
+          _id: order._id,
+          status: { $in: allowedCurrentStatuses },
+          paymentStatus: order.paymentStatus,
+        },
+        {
+          $set: {
+            status: 'cancelled',
+            cancelledAt: now,
+            cancelReason,
+            ...(order.paymentStatus === 'paid'
+              ? { paymentStatus: 'refunded', refundedAt: now }
+              : {}),
+          },
+        },
+        { returnDocument: 'after', ...(session ? { session } : {}) }
+      );
+
+      if (!updatedOrder) {
+        const refreshed = await Order.findById(order._id).session(
+          session ?? null
+        );
+        if (refreshed?.status === 'cancelled') {
+          throw new AppError('This order is already cancelled', 400);
+        }
+        if (refreshed?.status === 'delivered') {
+          throw new AppError('Delivered orders cannot be cancelled', 400);
+        }
+        if (refreshed?.status === 'refunded') {
+          throw new AppError('Refunded orders cannot be cancelled', 400);
+        }
+        throw new AppError(
+          'Order status changed concurrently; cannot cancel in its current state',
+          409
+        );
+      }
+
+      await inventoryService.restoreInventory(updatedOrder.items, session);
+      return updatedOrder;
+    };
+
+    if (supportsTransactions) {
+      const session = await mongoose.startSession();
+      try {
+        let result: IOrder | undefined;
+        await session.withTransaction(async () => {
+          result = await performAtomicCancel(session);
+        });
+        if (result) return result;
+      } catch (err: unknown) {
+        const errorMsg = (err as Error)?.message || '';
+        const isStandaloneUnsupported =
+          errorMsg.includes('replica set') ||
+          errorMsg.includes('Transaction numbers are only allowed') ||
+          errorMsg.includes('retryable write') ||
+          errorMsg.includes('standalone') ||
+          (err as { codeName?: string })?.codeName === 'IllegalOperation';
+        if (!isStandaloneUnsupported) {
+          throw err;
+        }
+      } finally {
+        await session.endSession();
+      }
+    }
+
+    return performAtomicCancel();
+  }
+
+  /**
    * Get an order by ID or orderNumber
    */
   async getOrderById(
@@ -223,9 +373,7 @@ export class OrderService {
   ): Promise<IOrder> {
     const order = await this.findOrderByIdentifier(orderId, true);
 
-    // Check ownership unless admin
     const ownerId = resolveOwnerId(order.user);
-
     if (userRole !== 'admin' && ownerId !== userId) {
       throw new AppError('You do not have permission to view this order', 403);
     }
@@ -242,13 +390,25 @@ export class OrderService {
   ): Promise<PaginatedResult<IOrder>> {
     assertObjectId(userId, 'user ID');
 
-    const baseFilter: Record<string, unknown> = { user: userId };
-    if (queryString.status) {
-      baseFilter.status = String(queryString.status) as OrderStatus;
-    }
+    const lockedFilter: Record<string, unknown> = { user: userId };
 
-    return paginateQuery(() => Order.find(baseFilter), queryString, {
+    return paginateQuery(() => Order.find(lockedFilter), queryString, {
       search: false,
+      lockedFilter,
+      allowedFilterFields: [
+        'status',
+        'paymentStatus',
+        'paymentMethod',
+        'shippingMethod',
+        'total',
+      ],
+      allowedSortFields: [
+        'createdAt',
+        'updatedAt',
+        'total',
+        'subtotal',
+        'status',
+      ],
     });
   }
 
@@ -261,6 +421,23 @@ export class OrderService {
     return paginateQuery(() => Order.find(), queryString, {
       search: true,
       populate: { path: 'user', select: 'firstName lastName email phone' },
+      allowedFilterFields: [
+        'user',
+        'status',
+        'paymentStatus',
+        'paymentMethod',
+        'shippingMethod',
+        'orderNumber',
+        'total',
+      ],
+      allowedSortFields: [
+        'createdAt',
+        'updatedAt',
+        'total',
+        'subtotal',
+        'status',
+        'orderNumber',
+      ],
     });
   }
 
@@ -276,7 +453,6 @@ export class OrderService {
     const order = await this.findOrderByIdentifier(orderId);
 
     const ownerId = resolveOwnerId(order.user);
-
     if (userRole !== 'admin' && ownerId !== userId) {
       throw new AppError(
         'You do not have permission to cancel this order',
@@ -287,12 +463,13 @@ export class OrderService {
     if (order.status === 'cancelled') {
       throw new AppError('This order is already cancelled', 400);
     }
-
     if (order.status === 'delivered') {
       throw new AppError('Delivered orders cannot be cancelled', 400);
     }
+    if (order.status === 'refunded') {
+      throw new AppError('Refunded orders cannot be cancelled', 400);
+    }
 
-    // Customers can only cancel when order is pending or confirmed
     if (userRole !== 'admin' && !canCustomerCancelOrder(order.status)) {
       throw new AppError(
         `Orders in "${order.status}" status cannot be cancelled by customer`,
@@ -306,44 +483,16 @@ export class OrderService {
         ? 'Cancelled by store administrator'
         : 'Cancelled by customer');
 
-    // Atomically transition status to cancelled ONLY IF it is not already cancelled or delivered
-    const updatedOrder = await Order.findOneAndUpdate(
-      {
-        _id: order._id,
-        status: { $nin: ['cancelled', 'delivered'] },
-      },
-      {
-        $set: {
-          status: 'cancelled',
-          cancelledAt: new Date(),
-          cancelReason,
-          ...(order.paymentStatus === 'paid'
-            ? { paymentStatus: 'refunded' }
-            : {}),
-        },
-      },
-      { returnDocument: 'after' }
-    );
+    const allowedStatuses: OrderStatus[] =
+      userRole === 'admin'
+        ? ['pending', 'confirmed', 'processing', 'shipped']
+        : ['pending', 'confirmed'];
 
-    if (!updatedOrder) {
-      const refreshed = await Order.findById(order._id);
-      if (refreshed?.status === 'cancelled') {
-        throw new AppError('This order is already cancelled', 400);
-      }
-      if (refreshed?.status === 'delivered') {
-        throw new AppError('Delivered orders cannot be cancelled', 400);
-      }
-      throw new AppError('Order cannot be cancelled in its current state', 400);
-    }
-
-    // Restore product quantities ONLY AFTER atomic cancellation succeeded
-    await inventoryService.restoreInventory(updatedOrder.items);
-
-    return updatedOrder;
+    return this.executeOrderCancellation(order, cancelReason, allowedStatuses);
   }
 
   /**
-   * Update order status (Admin only)
+   * Update order status (Admin only) with atomic transition guard
    */
   async updateOrderStatus(
     orderId: string,
@@ -357,51 +506,47 @@ export class OrderService {
 
     validateOrderStatusTransition(order.status, newStatus);
 
-    // If changing to cancelled, perform atomic transition and restore stock
-    if (newStatus === 'cancelled' && order.status !== 'cancelled') {
-      const updatedOrder = await Order.findOneAndUpdate(
-        {
-          _id: order._id,
-          status: { $ne: 'cancelled' },
-        },
-        {
-          $set: {
-            status: 'cancelled',
-            cancelledAt: new Date(),
-            cancelReason: 'Cancelled by administrator',
-            ...(order.paymentStatus === 'paid'
-              ? { paymentStatus: 'refunded' }
-              : {}),
-          },
-        },
-        { returnDocument: 'after' }
+    if (newStatus === 'cancelled') {
+      return this.executeOrderCancellation(
+        order,
+        'Cancelled by administrator',
+        [order.status]
       );
-
-      if (!updatedOrder) {
-        throw new AppError('Order is already cancelled', 400);
-      }
-
-      await inventoryService.restoreInventory(updatedOrder.items);
-      return updatedOrder;
     }
 
-    // Auto timestamp transitions
+    const now = new Date();
+    const updateFields: Record<string, unknown> = { status: newStatus };
+
     if (newStatus === 'shipped') {
-      order.shippedAt = new Date();
+      updateFields.shippedAt = now;
     } else if (newStatus === 'delivered') {
-      order.deliveredAt = new Date();
+      updateFields.deliveredAt = now;
       if (order.paymentMethod === 'cod') {
-        order.paymentStatus = 'paid';
+        updateFields.paymentStatus = 'paid';
       }
+    } else if (newStatus === 'refunded') {
+      updateFields.paymentStatus = 'refunded';
+      updateFields.refundedAt = now;
     }
 
-    order.status = newStatus;
-    await order.save();
-    return order;
+    const updatedOrder = await Order.findOneAndUpdate(
+      { _id: order._id, status: order.status },
+      { $set: updateFields },
+      { returnDocument: 'after', runValidators: true }
+    );
+
+    if (!updatedOrder) {
+      throw new AppError(
+        'Order status changed concurrently; please retry',
+        409
+      );
+    }
+
+    return updatedOrder;
   }
 
   /**
-   * Update payment status (Admin or payment webhook)
+   * Update payment status (Admin or payment webhook) with transition validation
    */
   async updatePaymentStatus(
     orderId: string,
@@ -409,13 +554,52 @@ export class OrderService {
   ): Promise<IOrder> {
     const order = await this.findOrderByIdentifier(orderId);
 
-    order.paymentStatus = paymentStatus;
-    if (paymentStatus === 'paid' && order.status === 'pending') {
-      order.status = 'confirmed';
+    if (order.status === 'cancelled' || order.status === 'refunded') {
+      throw new AppError(
+        `Cannot update payment status on a ${order.status} order`,
+        400
+      );
     }
 
-    await order.save();
-    return order;
+    if (order.paymentStatus === paymentStatus) {
+      return order;
+    }
+
+    const allowedNext =
+      VALID_PAYMENT_STATUS_TRANSITIONS[order.paymentStatus] || [];
+    if (!allowedNext.includes(paymentStatus)) {
+      throw new AppError(
+        `Cannot transition payment status from "${order.paymentStatus}" to "${paymentStatus}"`,
+        400
+      );
+    }
+
+    const updateFields: Record<string, unknown> = { paymentStatus };
+    if (paymentStatus === 'paid' && order.status === 'pending') {
+      updateFields.status = 'confirmed';
+    }
+    if (paymentStatus === 'refunded') {
+      updateFields.refundedAt = new Date();
+    }
+
+    const updatedOrder = await Order.findOneAndUpdate(
+      {
+        _id: order._id,
+        paymentStatus: order.paymentStatus,
+        status: order.status,
+      },
+      { $set: updateFields },
+      { returnDocument: 'after', runValidators: true }
+    );
+
+    if (!updatedOrder) {
+      throw new AppError(
+        'Order payment state changed concurrently; please retry',
+        409
+      );
+    }
+
+    return updatedOrder;
   }
 }
 

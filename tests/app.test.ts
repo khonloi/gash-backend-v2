@@ -89,5 +89,16 @@ describe('App Endpoints', () => {
       expect(res.statusCode).toBe(404);
       expect(res.headers['x-request-id']).toBeDefined();
     });
+
+    it('should replace unsafe client X-Request-Id with a fresh UUID v4', async () => {
+      const res = await request(app)
+        .get('/api/v1/health')
+        .set('X-Request-Id', 'bad id with spaces & chars!');
+
+      expect(res.statusCode).toBe(200);
+      expect(res.headers['x-request-id']).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+      );
+    });
   });
 });

@@ -1,40 +1,30 @@
 import winston from 'winston';
 import { env } from './env.js';
 
-const { combine, timestamp, printf, colorize, json } = winston.format;
+const { combine, timestamp, printf, colorize, json, errors } = winston.format;
 
-const logFormat = printf(({ level, message, timestamp }) => {
-  return `${timestamp} [${level}]: ${message}`;
-});
+const devFormat = printf(
+  ({ level, message, timestamp: ts, stack, ...meta }) => {
+    const metaKeys = Object.keys(meta);
+    const metaStr = metaKeys.length > 0 ? ` ${JSON.stringify(meta)}` : '';
+    return `${ts} [${level}]: ${stack || message}${metaStr}`;
+  }
+);
 
-const transports: winston.transport[] = [
-  new winston.transports.Console({
-    format:
-      env.NODE_ENV === 'production'
-        ? combine(timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }), logFormat)
-        : combine(
-            colorize(),
-            timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
-            logFormat
-          ),
-  }),
-];
-
-if (env.NODE_ENV === 'production') {
-  transports.push(
-    new winston.transports.File({
-      filename: 'logs/error.log',
-      level: 'error',
-      format: combine(timestamp(), json()),
-    }),
-    new winston.transports.File({
-      filename: 'logs/combined.log',
-      format: combine(timestamp(), json()),
-    })
-  );
-}
-
+// Emit structured JSON logs to stdout/stderr in production (container-safe under non-root USER node)
 export const logger = winston.createLogger({
   level: env.NODE_ENV === 'production' ? 'info' : 'debug',
-  transports,
+  format: combine(errors({ stack: true }), timestamp()),
+  transports: [
+    new winston.transports.Console({
+      format:
+        env.NODE_ENV === 'production'
+          ? combine(timestamp(), json())
+          : combine(
+              colorize(),
+              timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
+              devFormat
+            ),
+    }),
+  ],
 });

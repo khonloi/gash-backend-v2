@@ -28,13 +28,27 @@ const chatContextCardSchema = new Schema<IChatContextCard>(
   { _id: true }
 );
 
+chatContextCardSchema.pre('validate', function () {
+  if (this.cardType === 'product' && !this.product) {
+    this.invalidate(
+      'product',
+      'Product reference is required for product context cards'
+    );
+  }
+  if (this.cardType === 'order' && !this.order) {
+    this.invalidate(
+      'order',
+      'Order reference is required for order context cards'
+    );
+  }
+});
+
 const messageSchema = new Schema<IMessage>(
   {
     conversation: {
       type: Schema.Types.ObjectId,
       ref: 'Conversation',
       required: [true, 'Conversation reference is required'],
-      index: true,
     },
     senderType: {
       type: String,
@@ -43,7 +57,6 @@ const messageSchema = new Schema<IMessage>(
         message: '{VALUE} is not a valid sender type',
       },
       required: [true, 'Sender type is required'],
-      index: true,
     },
     senderUser: {
       type: Schema.Types.ObjectId,
@@ -64,7 +77,6 @@ const messageSchema = new Schema<IMessage>(
     isRead: {
       type: Boolean,
       default: false,
-      index: true,
     },
     readAt: {
       type: Date,
@@ -83,7 +95,6 @@ const messageSchema = new Schema<IMessage>(
 
 // Indexes
 messageSchema.index({ conversation: 1, createdAt: 1 });
-messageSchema.index({ conversation: 1, createdAt: -1 });
 messageSchema.index({ conversation: 1, isRead: 1, senderType: 1 });
 
 export const Message: Model<IMessage> = mongoose.model<IMessage>(

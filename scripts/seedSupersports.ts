@@ -1,6 +1,8 @@
+import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
 import mongoose from 'mongoose';
 import { env } from '../src/config/env.js';
+import { SHIPPING_FEES } from '../src/config/constants.js';
 import { User } from '../src/models/User.js';
 import { Product } from '../src/models/Product.js';
 import { Cart } from '../src/models/Cart.js';
@@ -165,6 +167,7 @@ async function translateViToEn(text: string): Promise<string> {
       const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=vi&tl=en&dt=t&q=${encodeURIComponent(chunk)}`;
       const res = await fetch(url, {
         headers: { 'User-Agent': 'Mozilla/5.0' },
+        signal: AbortSignal.timeout(10000),
       });
       if (!res.ok) {
         translatedParts.push(chunk);
@@ -317,6 +320,19 @@ function mapCategoryAndSubcategory(
   return { category: 'Apparel', subcategory: 'Sportswear' };
 }
 
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function redactMongoUri(uri: string): string {
+  return uri.replace(/\/\/([^@/]+)@/, '//***:***@');
+}
+
 function buildEnglishHtmlDescription(
   enTitle: string,
   translatedBody: string,
@@ -364,11 +380,11 @@ function buildEnglishHtmlDescription(
     bullets.length > 0 ? bullets.slice(0, 6) : defaultBullets;
 
   const html = [
-    `<h4><strong>${enTitle}</strong></h4>`,
-    `<p>${introParagraph}</p>`,
+    `<h4><strong>${escapeHtml(enTitle)}</strong></h4>`,
+    `<p>${escapeHtml(introParagraph)}</p>`,
     '<h4><strong>Key Specifications</strong></h4>',
     '<ul>',
-    ...finalBullets.map((b) => `<li>${b}</li>`),
+    ...finalBullets.map((b) => `<li>${escapeHtml(b)}</li>`),
     '</ul>',
   ]
     .join('\n')
@@ -410,7 +426,10 @@ async function fetchDiverseSupersportsProducts(): Promise<ShopifyProduct[]> {
 
   for (const page of SUPERSPORTS_PAGES) {
     const url = `https://supersports.com.vn/collections/all/products.json?limit=100&page=${page}`;
-    const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+    const res = await fetch(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0' },
+      signal: AbortSignal.timeout(15000),
+    });
     if (!res.ok) continue;
     const data = (await res.json()) as { products?: ShopifyProduct[] };
     const valid = (data.products || []).filter(
@@ -480,8 +499,19 @@ function formatVnd(amount: number): string {
 }
 
 async function seedDatabase(): Promise<void> {
+  if (env.NODE_ENV === 'production') {
+    throw new Error(
+      'Refusing to run destructive seed script when NODE_ENV=production.'
+    );
+  }
+  if (!process.argv.includes('--confirm')) {
+    throw new Error(
+      'Refusing to wipe collections without explicit --confirm flag.'
+    );
+  }
+
   // eslint-disable-next-line no-console
-  console.log(`Connecting to MongoDB at ${env.MONGO_URI}...`);
+  console.log(`Connecting to MongoDB at ${redactMongoUri(env.MONGO_URI)}...`);
   await mongoose.connect(env.MONGO_URI);
 
   // eslint-disable-next-line no-console
@@ -577,35 +607,58 @@ async function seedDatabase(): Promise<void> {
           displayOrder: imgIdx,
         }));
 
-        // Variants (Color & Size translated)
-        const variants: Array<Record<string, unknown>> = [];
+        // Per-SKU sellable variants (Color & Size combinations)
+        let cleanColors: string[] = [];
+        let cleanSizes: string[] = [];
         for (const opt of raw.options || []) {
           const isColor = /màu/i.test(opt.name);
           const isSize = /kích/i.test(opt.name);
-          const variantName = isColor ? 'Color' : isSize ? 'Size' : 'Option';
-
-          const cleanValues = isColor
-            ? [...new Set(opt.values.map(translateColor))]
+          const values = isColor
+            ? [...new Set(opt.values.map(translateColor).filter(Boolean))]
             : [
                 ...new Set(
                   opt.values
                     .map((v) => v.trim())
-                    .filter((v) => !/^default/i.test(v))
+                    .filter((v) => v.length > 0 && !/^default/i.test(v))
                 ),
               ];
 
-          if (cleanValues.length > 0) {
-            variants.push({
-              name: variantName,
-              options: cleanValues,
-              sku: `${candidateSku}-${variantName.slice(0, 3).toUpperCase()}`,
-              priceModifier: 0,
-              stock: 20 + ((index * 7 + variants.length * 5) % 45),
-            });
+          if (isColor) cleanColors = values.slice(0, 3);
+          else if (isSize) cleanSizes = values.slice(0, 4);
+        }
+
+        const variants: Array<{
+          sku: string;
+          size?: string;
+          color?: string;
+          priceModifier: number;
+          stock: number;
+        }> = [];
+        const colorsToUse = cleanColors.length > 0 ? cleanColors : [undefined];
+        const sizesToUse = cleanSizes.length > 0 ? cleanSizes : [undefined];
+
+        if (cleanColors.length > 0 || cleanSizes.length > 0) {
+          let vIdx = 0;
+          for (const color of colorsToUse) {
+            for (const size of sizesToUse) {
+              if (variants.length >= 8) break;
+              vIdx += 1;
+              const stock = 8 + ((index * 7 + vIdx * 5) % 25);
+              variants.push({
+                sku: `${candidateSku}-V${vIdx}`,
+                ...(size ? { size } : {}),
+                ...(color ? { color } : {}),
+                priceModifier: 0,
+                stock,
+              });
+            }
           }
         }
 
-        const totalQuantity = 25 + ((index * 11) % 75);
+        const totalQuantity =
+          variants.length > 0
+            ? variants.reduce((sum, v) => sum + v.stock, 0)
+            : 25 + ((index * 11) % 75);
         const ratingsAverage = Number(
           (4.2 + ((index * 7) % 9) * 0.1).toFixed(1)
         );
@@ -829,16 +882,21 @@ async function seedDatabase(): Promise<void> {
       if (seenProductInCart.has(pid)) continue;
       seenProductInCart.add(pid);
 
-      const colorVar = prod.variants?.find((v) => v.name === 'Color');
-      const sizeVar = prod.variants?.find((v) => v.name === 'Size');
+      const chosenVariant =
+        prod.variants && prod.variants.length > 0
+          ? prod.variants[(cIdx + k) % prod.variants.length]
+          : undefined;
+      const unitPrice = Math.max(
+        0,
+        prod.price + (chosenVariant?.priceModifier || 0)
+      );
 
       items.push({
         product: prod._id,
         quantity: 1 + ((cIdx + k) % 3),
-        color: colorVar?.options?.[0] || 'Default',
-        size:
-          sizeVar?.options?.[k % (sizeVar.options.length || 1)] || 'Standard',
-        priceAtAdd: prod.price,
+        color: chosenVariant?.color || 'Default',
+        size: chosenVariant?.size || 'Standard',
+        priceAtAdd: Math.round(unitPrice * 100) / 100,
       });
     }
 
@@ -899,38 +957,46 @@ async function seedDatabase(): Promise<void> {
 
     const lineCount = 1 + (oIdx % 4);
     const items: Array<Record<string, unknown>> = [];
-    let subtotal = 0;
+    let subtotalCents = 0;
 
     for (let k = 0; k < lineCount; k++) {
       const prod =
         insertedProducts[(oIdx * 5 + k * 11) % insertedProducts.length];
       const qty = 1 + ((oIdx + k) % 2);
-      const colorVar = prod.variants?.find((v) => v.name === 'Color');
-      const sizeVar = prod.variants?.find((v) => v.name === 'Size');
+      const chosenVariant =
+        prod.variants && prod.variants.length > 0
+          ? prod.variants[(oIdx + k) % prod.variants.length]
+          : undefined;
+      const unitPrice =
+        Math.round(
+          Math.max(0, prod.price + (chosenVariant?.priceModifier || 0)) * 100
+        ) / 100;
 
-      subtotal += prod.price * qty;
+      subtotalCents += Math.round(unitPrice * 100) * qty;
       items.push({
         product: prod._id,
         name: prod.name,
-        sku: prod.sku,
-        price: prod.price,
+        sku: chosenVariant?.sku || prod.sku,
+        price: unitPrice,
         quantity: qty,
-        color: colorVar?.options?.[0] || 'Default',
-        size:
-          sizeVar?.options?.[k % (sizeVar.options.length || 1)] || 'Standard',
+        color: chosenVariant?.color || 'Default',
+        size: chosenVariant?.size || 'Standard',
         imageUrl: prod.images?.[0]?.url || '',
       });
     }
 
+    const subtotal = Math.round(subtotalCents) / 100;
     const shippingMethod = oIdx % 4 === 0 ? 'express' : 'standard';
     const shippingFee =
-      shippingMethod === 'express' ? 25 : subtotal >= 120 ? 0 : 10;
-    const total = subtotal + shippingFee;
+      shippingMethod === 'express'
+        ? SHIPPING_FEES.EXPRESS
+        : SHIPPING_FEES.STANDARD;
+    const total = Math.round(subtotalCents + shippingFee * 100) / 100;
 
     const daysAgo = 180 - Math.floor((oIdx / 180) * 180);
     const createdAt = new Date(now - daysAgo * 24 * 60 * 60 * 1000);
     const dateStamp = createdAt.toISOString().slice(2, 10).replace(/-/g, '');
-    const orderNumber = `GS-${dateStamp}-${String(oIdx + 1).padStart(4, '0')}`;
+    const orderNumber = `GS-${dateStamp}-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
 
     const doc: Record<string, unknown> = {
       orderNumber,
@@ -1039,7 +1105,10 @@ async function seedDatabase(): Promise<void> {
   for (let cIdx = 0; cIdx < insertedConversations.length; cIdx++) {
     const conv = insertedConversations[cIdx];
     const prod = insertedProducts[(cIdx * 4) % insertedProducts.length];
-    const relatedOrder = insertedOrders[(cIdx * 6) % insertedOrders.length];
+    const convUserId = conv.user?.toString();
+    const relatedOrder =
+      insertedOrders.find((o) => o.user?.toString() === convUserId) ||
+      insertedOrders[(cIdx * 6) % insertedOrders.length];
     const baseTime =
       (conv.lastMessageAt || new Date()).getTime() - 25 * 60 * 1000;
 

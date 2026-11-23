@@ -6,17 +6,16 @@ const conversationSchema = new Schema<IConversation>(
     user: {
       type: Schema.Types.ObjectId,
       ref: 'User',
-      index: true,
     },
     guestId: {
       type: String,
       trim: true,
-      index: true,
+      minlength: [8, 'Guest ID must be at least 8 characters'],
+      maxlength: [128, 'Guest ID cannot exceed 128 characters'],
     },
     assignedAgent: {
       type: Schema.Types.ObjectId,
       ref: 'User',
-      index: true,
     },
     mode: {
       type: String,
@@ -25,7 +24,6 @@ const conversationSchema = new Schema<IConversation>(
         message: '{VALUE} is not a valid conversation mode',
       },
       default: 'ai',
-      index: true,
     },
     status: {
       type: String,
@@ -34,7 +32,6 @@ const conversationSchema = new Schema<IConversation>(
         message: '{VALUE} is not a valid conversation status',
       },
       default: 'bot_active',
-      index: true,
     },
     subject: {
       type: String,
@@ -44,7 +41,6 @@ const conversationSchema = new Schema<IConversation>(
     lastMessageAt: {
       type: Date,
       default: Date.now,
-      index: true,
     },
     lastMessagePreview: {
       type: String,
@@ -77,16 +73,45 @@ const conversationSchema = new Schema<IConversation>(
   }
 );
 
-// Compound indexes
-conversationSchema.index({ user: 1, updatedAt: -1 });
-conversationSchema.index({ guestId: 1, updatedAt: -1 });
+// Compound indexes aligned with query + sort patterns
+conversationSchema.index({ user: 1, lastMessageAt: -1 });
+conversationSchema.index({ guestId: 1, lastMessageAt: -1 });
 conversationSchema.index({ status: 1, mode: 1, lastMessageAt: -1 });
 conversationSchema.index({ assignedAgent: 1, status: 1, lastMessageAt: -1 });
 
-// Ensure at least one of user or guestId is present
+// Partial unique indexes preventing concurrent duplicate open conversations per actor+mode
+conversationSchema.index(
+  { user: 1, mode: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      user: { $exists: true },
+      status: { $in: ['bot_active', 'queued', 'assigned'] },
+    },
+  }
+);
+conversationSchema.index(
+  { guestId: 1, mode: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      guestId: { $exists: true },
+      status: { $in: ['bot_active', 'queued', 'assigned'] },
+    },
+  }
+);
+
+// Ensure XOR ownership: exactly one of user or guestId is present
 conversationSchema.pre('validate', function () {
-  if (!this.user && !this.guestId) {
+  const hasUser = Boolean(this.user);
+  const hasGuest = Boolean(this.guestId);
+  if (!hasUser && !hasGuest) {
     this.invalidate('user', 'Conversation must belong to a user or a guest ID');
+  } else if (hasUser && hasGuest) {
+    this.invalidate(
+      'guestId',
+      'Conversation cannot belong to both a user and a guest ID'
+    );
   }
 });
 

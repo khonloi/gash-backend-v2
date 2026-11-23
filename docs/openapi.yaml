@@ -7,6 +7,8 @@ info:
     Source of truth: `src/routes/*` and `src/validations/*`. Response bodies are
     only loosely typed here; request bodies mirror the zod schemas.
     Authentication: HS256 JWT access token in `Authorization: Bearer <token>`.
+    Refresh tokens are issued and rotated via HttpOnly cookie (`refreshToken`, path `/api/v1/auth`).
+    Guest chat sessions use signed guest tokens via `x-guest-token` header or `gash_guest` cookie.
   version: 1.0.0
   license:
     name: ISC
@@ -31,6 +33,21 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: HS256 access token (`type=access`). Refresh tokens are rejected.
+    RefreshCookie:
+      type: apiKey
+      in: cookie
+      name: refreshToken
+      description: HttpOnly refresh token cookie scoped to `/api/v1/auth`.
+    GuestCookie:
+      type: apiKey
+      in: cookie
+      name: gash_guest
+      description: Signed HttpOnly guest chat session cookie (`gst.<guestId>.<sig>`).
+    GuestHeader:
+      type: apiKey
+      in: header
+      name: x-guest-token
+      description: Signed guest chat session token (`gst.<guestId>.<sig>`).
 
   responses:
     Unauthorized:
@@ -40,6 +57,16 @@ components:
           schema: { $ref: '#/components/schemas/Error' }
     Forbidden:
       description: Authenticated but role not permitted.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: Requested resource was not found.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Conflict:
+      description: Conflict with current resource state or uniqueness constraint.
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
@@ -61,7 +88,9 @@ components:
       in: path
       name: orderId
       required: true
-      schema: { type: string, description: MongoDB ObjectId }
+      schema:
+        type: string
+        description: MongoDB ObjectId or orderNumber (e.g. GS-...)
     ItemId:
       in: path
       name: itemId
@@ -70,11 +99,6 @@ components:
     AddressId:
       in: path
       name: addressId
-      required: true
-      schema: { type: string }
-    Token:
-      in: path
-      name: token
       required: true
       schema: { type: string }
 
@@ -115,7 +139,8 @@ components:
         password:
           type: string
           minLength: 8
-          description: Needs upper, lower, digit and one of `@$!%*?&`.
+          maxLength: 72
+          description: Needs upper, lower, digit, and special character (max 72 chars).
         passwordConfirm: { type: string }
 
     LoginInput:
@@ -125,32 +150,33 @@ components:
         email: { type: string, format: email }
         password: { type: string }
 
-    RefreshTokenInput:
-      type: object
-      required: [refreshToken]
-      properties:
-        refreshToken: { type: string }
-
     ResetPasswordInput:
       type: object
-      required: [password, passwordConfirm]
+      required: [token, password, passwordConfirm]
       properties:
-        password: { type: string, minLength: 8 }
+        token: { type: string }
+        password: { type: string, minLength: 8, maxLength: 72 }
         passwordConfirm: { type: string }
+
+    VerifyEmailInput:
+      type: object
+      required: [token]
+      properties:
+        token: { type: string }
 
     ChangePasswordInput:
       type: object
       required: [currentPassword, newPassword, newPasswordConfirm]
       properties:
         currentPassword: { type: string }
-        newPassword: { type: string, minLength: 8 }
+        newPassword: { type: string, minLength: 8, maxLength: 72 }
         newPasswordConfirm: { type: string }
 
     AuthTokens:
       type: object
+      description: Refresh token is set via HttpOnly `refreshToken` cookie only.
       properties:
         accessToken: { type: string }
-        refreshToken: { type: string }
 
     AuthResponse:
       type: object
@@ -198,10 +224,25 @@ components:
         contactEmail: { type: string, format: email }
         contactPhone: { type: string }
         notes: { type: string, maxLength: 1000 }
+        idempotencyKey:
+          type: string
+          maxLength: 128
+          description: Optional client idempotency key to prevent duplicate orders.
         items:
           type: array
           description: Optional explicit items (e.g. guest checkout).
           items: { $ref: '#/components/schemas/CartItemInput' }
+
+    ProductVariantInput:
+      type: object
+      required: [sku, stock]
+      properties:
+        sku: { type: string, maxLength: 64 }
+        size: { type: string, maxLength: 40 }
+        color: { type: string, maxLength: 40 }
+        price: { type: number, minimum: 0 }
+        priceModifier: { type: number }
+        stock: { type: integer, minimum: 0 }
 
     ProductInput:
       type: object
@@ -214,14 +255,64 @@ components:
         compareAtPrice: { type: number, minimum: 0 }
         costPrice: { type: number, minimum: 0 }
         sku: { type: string }
+        barcode: { type: string }
         quantity: { type: integer, minimum: 0, default: 0 }
+        lowStockThreshold: { type: integer, minimum: 0, default: 5 }
         category: { type: string }
         subcategory: { type: string }
         brand: { type: string }
         tags: { type: array, items: { type: string } }
+        images:
+          type: array
+          items:
+            type: object
+            required: [url]
+            properties:
+              url: { type: string, format: uri }
+              altText: { type: string, maxLength: 200 }
+              isPrimary: { type: boolean }
+              displayOrder: { type: integer, minimum: 0 }
+        variants:
+          type: array
+          items: { $ref: '#/components/schemas/ProductVariantInput' }
+        attributes:
+          type: object
+          additionalProperties: { type: string }
         status:
           { type: string, enum: [draft, active, archived], default: draft }
         isFeatured: { type: boolean, default: false }
+        weight: { type: number, minimum: 0 }
+        dimensions:
+          type: object
+          properties:
+            length: { type: number, minimum: 0 }
+            width: { type: number, minimum: 0 }
+            height: { type: number, minimum: 0 }
+
+    ProductUpdateInput:
+      type: object
+      description: Partial product update payload (same fields as ProductInput, all optional).
+      properties:
+        name: { type: string, minLength: 3, maxLength: 200 }
+        description: { type: string, maxLength: 5000 }
+        shortDescription: { type: string, maxLength: 500 }
+        price: { type: number, minimum: 0 }
+        compareAtPrice: { type: number, minimum: 0 }
+        costPrice: { type: number, minimum: 0 }
+        sku: { type: string }
+        barcode: { type: string }
+        quantity: { type: integer, minimum: 0 }
+        lowStockThreshold: { type: integer, minimum: 0 }
+        category: { type: string }
+        subcategory: { type: string }
+        brand: { type: string }
+        tags: { type: array, items: { type: string } }
+        variants:
+          type: array
+          items: { $ref: '#/components/schemas/ProductVariantInput' }
+        status:
+          { type: string, enum: [draft, active, archived] }
+        isFeatured: { type: boolean }
 
 paths:
   /health:
@@ -278,15 +369,11 @@ paths:
   /auth/refresh-token:
     post:
       tags: [Auth]
-      summary: Rotate refresh token (rate limited 60 / 15 min / IP)
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/RefreshTokenInput' }
+      summary: Rotate refresh token via HttpOnly cookie (rate limited 60 / 15 min / IP)
+      security: [{ RefreshCookie: [] }]
       responses:
         '200':
-          description: New token pair.
+          description: New access token in JSON body and rotated refreshToken HttpOnly cookie.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AuthResponse' }
@@ -296,11 +383,10 @@ paths:
   /auth/logout:
     post:
       tags: [Auth]
-      summary: Log out current session
-      security: [{ BearerAuth: [] }]
+      summary: Log out current session (supports expired/missing access token via refreshToken cookie)
+      security: [{}, { BearerAuth: [], RefreshCookie: [] }]
       responses:
-        '200': { description: OK. }
-        '401': { $ref: '#/components/responses/Unauthorized' }
+        '200': { description: OK (clears refreshToken HttpOnly cookie). }
 
   /auth/logout-all:
     post:
@@ -328,30 +414,39 @@ paths:
         '200': { description: Accepted. }
         '429': { $ref: '#/components/responses/TooManyRequests' }
 
-  /auth/reset-password/{token}:
-    patch:
+  /auth/reset-password:
+    post:
       tags: [Auth]
-      summary: Reset password with emailed token (rate limited 5 / 15 min / IP)
-      parameters:
-        - { $ref: '#/components/parameters/Token' }
+      summary: Reset password with emailed token in request body (rate limited 5 / 15 min / IP)
       requestBody:
         required: true
         content:
           application/json:
             schema: { $ref: '#/components/schemas/ResetPasswordInput' }
       responses:
-        '200': { description: Password changed. }
+        '200':
+          description: Password changed and new session issued.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthResponse' }
         '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
 
-  /auth/verify-email/{token}:
-    get:
+  /auth/verify-email:
+    post:
       tags: [Auth]
-      summary: Verify email address
-      parameters:
-        - { $ref: '#/components/parameters/Token' }
+      summary: Verify email address with token in request body (rate limited 15 / 15 min / IP)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/VerifyEmailInput' }
       responses:
         '200': { description: Verified. }
-        '400': { description: Invalid or expired token. }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
 
   /users/me:
     get:
@@ -370,10 +465,10 @@ paths:
         '400': { $ref: '#/components/responses/ValidationError' }
     delete:
       tags: [Users]
-      summary: Deactivate current account
+      summary: Deactivate current account and clear sessions
       security: [{ BearerAuth: [] }]
       responses:
-        '200': { description: OK. }
+        '204': { description: Deactivated. }
 
   /users/me/password:
     patch:
@@ -420,7 +515,7 @@ paths:
       parameters:
         - { $ref: '#/components/parameters/AddressId' }
       responses:
-        '204': { description: Removed. }
+        '200': { description: Address removed; returns remaining addresses. }
 
   /users:
     get:
@@ -480,8 +575,8 @@ paths:
       tags: [Products]
       summary: List products (public)
       description: |
-        NOTE: currently returns products of every `status` (draft/archived
-        included) to anonymous callers. See audit finding N1.
+        Anonymous callers and customers are locked to `status=active` products.
+        Authenticated `seller` and `admin` callers can filter across `draft`, `active`, and `archived`.
       parameters:
         - { in: query, name: page, schema: { type: integer, default: 1 } }
         - {
@@ -530,16 +625,26 @@ paths:
   /products/stats:
     get:
       tags: [Products]
-      summary: Category statistics (public)
+      summary: Category statistics (admin, seller)
+      security: [{ BearerAuth: [] }]
       responses:
         '200': { description: OK. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
 
   /products/featured:
     get:
       tags: [Products]
       summary: Featured products (public)
+      parameters:
+        - {
+            in: query,
+            name: limit,
+            schema: { type: integer, minimum: 1, maximum: 50, default: 10 },
+          }
       responses:
         '200': { description: OK. }
+        '400': { $ref: '#/components/responses/ValidationError' }
 
   /products/slug/{slug}:
     get:
@@ -562,17 +667,19 @@ paths:
         '404': { description: Not found. }
     patch:
       tags: [Products]
-      summary: Update product (admin, seller)
+      summary: Update product (admin, seller owner)
       security: [{ BearerAuth: [] }]
       parameters:
         - { $ref: '#/components/parameters/Id' }
       requestBody:
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/ProductInput' }
+            schema: { $ref: '#/components/schemas/ProductUpdateInput' }
       responses:
         '200': { description: OK. }
+        '400': { $ref: '#/components/responses/ValidationError' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
     delete:
       tags: [Products]
       summary: Hard-delete product (admin)
@@ -622,7 +729,7 @@ paths:
       summary: Clear cart
       security: [{ BearerAuth: [] }]
       responses:
-        '200': { description: OK. }
+        '204': { description: Cart cleared. }
 
   /cart/items:
     post:
@@ -806,10 +913,19 @@ paths:
         '200': { description: OK. }
         '403': { $ref: '#/components/responses/Forbidden' }
 
+  /chat/guest-session:
+    post:
+      tags: [Chat]
+      summary: Issue a signed guest chat token and HttpOnly gash_guest cookie (rate limited)
+      responses:
+        '201': { description: Guest session created (returns guestId and guestToken). }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
   /chat/conversations:
     post:
       tags: [Chat]
-      summary: Start a new chat conversation (supports guest or authenticated user)
+      summary: Start a new chat conversation (authenticated user or signed guest session)
+      security: [{ BearerAuth: [] }, { GuestHeader: [] }, { GuestCookie: [] }]
       requestBody:
         content:
           application/json:
@@ -831,10 +947,13 @@ paths:
                       note: { type: string }
       responses:
         '201': { description: Conversation created. }
+        '400': { $ref: '#/components/responses/ValidationError' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
     get:
       tags: [Chat]
       summary: List user/guest conversations or support queue
+      security: [{ BearerAuth: [] }, { GuestHeader: [] }, { GuestCookie: [] }]
       parameters:
         - name: status
           in: query
@@ -846,19 +965,27 @@ paths:
         - name: mode
           in: query
           schema: { type: string, enum: [ai, support, seller] }
+        - name: assignedAgent
+          in: query
+          schema: { type: string, description: MongoDB ObjectId }
+        - name: sort
+          in: query
+          schema: { type: string, example: '-lastMessageAt' }
         - name: page
           in: query
-          schema: { type: integer, default: 1 }
+          schema: { type: integer, default: 1, maximum: 1000 }
         - name: limit
           in: query
-          schema: { type: integer, default: 30 }
+          schema: { type: integer, default: 30, maximum: 100 }
       responses:
         '200': { description: Paginated conversation list. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
 
   /chat/conversations/{id}:
     get:
       tags: [Chat]
       summary: Get conversation details by ID
+      security: [{ BearerAuth: [] }, { GuestHeader: [] }, { GuestCookie: [] }]
       parameters:
         - name: id
           in: path
@@ -866,12 +993,15 @@ paths:
           schema: { type: string }
       responses:
         '200': { description: Conversation details. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
 
   /chat/conversations/{id}/messages:
     get:
       tags: [Chat]
       summary: Get paginated messages in conversation
+      security: [{ BearerAuth: [] }, { GuestHeader: [] }, { GuestCookie: [] }]
       parameters:
         - name: id
           in: path
@@ -879,16 +1009,20 @@ paths:
           schema: { type: string }
         - name: page
           in: query
-          schema: { type: integer, default: 1 }
+          schema: { type: integer, default: 1, maximum: 1000 }
         - name: limit
           in: query
-          schema: { type: integer, default: 30 }
+          schema: { type: integer, default: 30, maximum: 100 }
       responses:
         '200':
           { description: Paginated message list with populated context cards. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
     post:
       tags: [Chat]
       summary: Send message to conversation (triggers AI reply if in AI mode)
+      security: [{ BearerAuth: [] }, { GuestHeader: [] }, { GuestCookie: [] }]
       parameters:
         - name: id
           in: path
@@ -916,11 +1050,16 @@ paths:
       responses:
         '201':
           { description: Message created (and optional AI reply generated). }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
 
   /chat/conversations/{id}/handoff:
     post:
       tags: [Chat]
       summary: Escalate conversation from AI to human live support queue
+      security: [{ BearerAuth: [] }, { GuestHeader: [] }, { GuestCookie: [] }]
       parameters:
         - name: id
           in: path
@@ -935,6 +1074,10 @@ paths:
                 reason: { type: string }
       responses:
         '200': { description: Conversation escalated to queued status. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
 
   /chat/conversations/{id}/assign:
     patch:
@@ -949,11 +1092,14 @@ paths:
       responses:
         '200': { description: Conversation assigned. }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
 
   /chat/conversations/{id}/status:
     patch:
       tags: [Chat]
       summary: Update conversation status (resolved, closed, etc.)
+      security: [{ BearerAuth: [] }, { GuestHeader: [] }, { GuestCookie: [] }]
       parameters:
         - name: id
           in: path
@@ -974,11 +1120,15 @@ paths:
                   }
       responses:
         '200': { description: Status updated. }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
 
   /chat/conversations/{id}/read:
     patch:
       tags: [Chat]
       summary: Mark conversation messages as read
+      security: [{ BearerAuth: [] }, { GuestHeader: [] }, { GuestCookie: [] }]
       parameters:
         - name: id
           in: path
@@ -986,20 +1136,24 @@ paths:
           schema: { type: string }
       responses:
         '200': { description: Marked as read. }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
 
   /chat/merge:
     post:
       tags: [Chat]
-      summary: Merge guest chat history into authenticated user account
+      summary: Merge guest chat history into authenticated user account (rate limited)
       security: [{ BearerAuth: [] }]
       requestBody:
-        required: true
         content:
           application/json:
             schema:
               type: object
-              required: [guestId]
+              description: Signed guest token (optional if sent via `gash_guest` cookie or `x-guest-token` header).
               properties:
-                guestId: { type: string }
+                guestToken: { type: string }
       responses:
         '200': { description: Guest conversations successfully merged. }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }

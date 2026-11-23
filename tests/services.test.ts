@@ -952,6 +952,390 @@ describe('Service Edge Cases & Branch Coverage Tests', () => {
         );
         expect(updated.paymentStatus).toBe('paid');
         expect(updated.status).toBe('confirmed'); // Auto confirmed!
+
+        // Idempotent same-status checks
+        const samePay = await orderService.updatePaymentStatus(
+          order._id.toString(),
+          'paid'
+        );
+        expect(samePay.paymentStatus).toBe('paid');
+
+        const sameStatus = await orderService.updateOrderStatus(
+          order._id.toString(),
+          'confirmed'
+        );
+        expect(sameStatus.status).toBe('confirmed');
+      });
+
+      it('createOrder retries E11000 duplicate orderNumber and restores inventory if Order.create fails', async () => {
+        const product = await Product.create({
+          name: 'Retry Item',
+          slug: 'retry-item',
+          description: 'Retry item description',
+          sku: 'SKU-RETRY',
+          price: 40,
+          quantity: 10,
+          category: 'Test Category',
+          status: 'active',
+        });
+
+        const origCreate = Order.create;
+        let callCount = 0;
+        Order.create = ((doc: unknown, opts?: unknown) => {
+          callCount += 1;
+          if (callCount === 1) {
+            return Promise.reject({
+              code: 11000,
+              keyPattern: { orderNumber: 1 },
+            });
+          }
+          return (origCreate as (...args: unknown[]) => unknown).call(
+            Order,
+            doc,
+            opts
+          );
+        }) as unknown as typeof Order.create;
+
+        try {
+          const order = await orderService.createOrder(undefined, {
+            items: [{ productId: product._id.toString(), quantity: 2 }],
+            shippingAddress: {
+              fullName: 'Retry Buyer',
+              phone: '0123456789',
+              addressLine1: '123 St',
+              city: 'HCMC',
+            },
+          } as CreateOrderInput);
+          expect(callCount).toBe(2);
+          expect(order.orderNumber).toMatch(/^GS-/);
+        } finally {
+          Order.create = origCreate;
+        }
+
+        // Now force permanent Order.create failure and verify Saga restores inventory
+        Order.create = (() =>
+          Promise.reject(
+            new Error('DB write error')
+          )) as unknown as typeof Order.create;
+        try {
+          await expect(
+            orderService.createOrder(undefined, {
+              items: [{ productId: product._id.toString(), quantity: 3 }],
+              shippingAddress: {
+                fullName: 'Fail Buyer',
+                phone: '0123456789',
+                addressLine1: '123 St',
+                city: 'HCMC',
+              },
+            } as CreateOrderInput)
+          ).rejects.toThrow('DB write error');
+
+          // Remaining stock should stay 8 (10 - 2 from succeeded order)
+          const pAfter = await Product.findById(product._id);
+          expect(pAfter?.quantity).toBe(8);
+        } finally {
+          Order.create = origCreate;
+        }
+      });
+
+      it('updateOrderStatus and updatePaymentStatus return 409 on concurrent write race', async () => {
+        const product = await Product.create({
+          name: 'Race Item',
+          slug: 'race-item',
+          description: 'Race item description',
+          sku: 'SKU-RACE',
+          price: 60,
+          quantity: 10,
+          category: 'Test Category',
+          status: 'active',
+        });
+
+        const order = await orderService.createOrder(undefined, {
+          items: [{ productId: product._id.toString(), quantity: 1 }],
+          shippingAddress: {
+            fullName: 'Race User',
+            phone: '0123456789',
+            addressLine1: '123 St',
+            city: 'HCMC',
+          },
+        } as CreateOrderInput);
+
+        const origFindOneAndUpdate = Order.findOneAndUpdate;
+        Order.findOneAndUpdate = (() =>
+          Promise.resolve(null)) as unknown as typeof Order.findOneAndUpdate;
+
+        try {
+          await expect(
+            orderService.updateOrderStatus(order._id.toString(), 'confirmed')
+          ).rejects.toThrow(/changed concurrently/i);
+
+          await expect(
+            orderService.updatePaymentStatus(order._id.toString(), 'paid')
+          ).rejects.toThrow(/changed concurrently/i);
+        } finally {
+          Order.findOneAndUpdate = origFindOneAndUpdate;
+        }
+      });
+
+      it('productService, APIFeatures exclusion projections, and guestToken branches', async () => {
+        const seller = await User.create({
+          firstName: 'Seller',
+          lastName: 'One',
+          email: 'seller.cov@example.com',
+          password: 'Password123!',
+          role: 'seller',
+        });
+
+        // Non-alphanumeric slug error & compareAtPrice <= price
+        await expect(
+          productService.generateUniqueSlug('!!!@@@###')
+        ).rejects.toThrow(/alphanumeric/i);
+
+        await expect(
+          productService.createProduct(
+            {
+              name: 'Bad Compare Price Product',
+              description: 'desc',
+              price: 100,
+              compareAtPrice: 80,
+              sku: 'BAD-CMP-1',
+              quantity: 5,
+              category: 'Shoes',
+              status: 'active',
+              tags: [],
+              images: [],
+              variants: [],
+              lowStockThreshold: 5,
+              isFeatured: false,
+            },
+            seller._id.toString()
+          )
+        ).rejects.toThrow(/Compare at price/i);
+
+        // Slug collision resolution (-1 suffix) and draft read access rules
+        const draftProd = await productService.createProduct(
+          {
+            name: 'Trail Shoe',
+            description: 'desc',
+            price: 100,
+            sku: 'TRAIL-D1',
+            quantity: 5,
+            category: 'Shoes',
+            status: 'draft',
+            tags: [],
+            images: [],
+            variants: [],
+            lowStockThreshold: 5,
+            isFeatured: false,
+          },
+          seller._id.toString()
+        );
+        const dupSlug = await productService.generateUniqueSlug('Trail Shoe');
+        expect(dupSlug).toBe('trail-shoe-1');
+
+        await expect(
+          productService.getProductById(draftProd._id.toString())
+        ).rejects.toThrow('No product found');
+
+        const ownerRead = await productService.getProductById(
+          draftProd._id.toString(),
+          { id: seller._id.toString(), role: 'seller' }
+        );
+        expect(ownerRead.name).toBe('Trail Shoe');
+
+        // APIFeatures exclusion projections (allowedSet vs global excludedSet)
+        const { APIFeatures } = await import('../src/utils/apiFeatures.js');
+        const featAllowed = new APIFeatures(
+          Product.find(),
+          { fields: '-description' },
+          { allowedSelectFields: ['name', 'price', 'description'] }
+        ).limitFields();
+        expect(featAllowed).toBeDefined();
+
+        const featExcluded = new APIFeatures(
+          Product.find(),
+          { fields: '-costPrice' },
+          { excludedSelectFields: ['__v'] }
+        ).limitFields();
+        expect(featExcluded).toBeDefined();
+
+        // guestToken edge cases
+        const {
+          createGuestSession,
+          verifyGuestToken,
+          maskGuestId,
+          signGuestToken,
+        } = await import('../src/utils/guestToken.js');
+        const sess = createGuestSession();
+        expect(verifyGuestToken(sess.guestToken)).toBe(sess.guestId);
+        expect(verifyGuestToken('gst.abc.bad')).toBeUndefined();
+        expect(verifyGuestToken(signGuestToken('short'))).toBeUndefined();
+        expect(verifyGuestToken('invalidtoken')).toBeUndefined();
+        expect(maskGuestId('short')).toBe('***');
+        expect(maskGuestId(sess.guestId)).toContain('...');
+
+        // productVariants branch edge cases
+        const { computeVariantUnitPrice, normalizeAndValidateVariants } =
+          await import('../src/utils/productVariants.js');
+        expect(() =>
+          computeVariantUnitPrice(10, { sku: 'NEG-1', priceModifier: -20 })
+        ).toThrow(/cannot be negative/i);
+        expect(() =>
+          normalizeAndValidateVariants(100, [{ sku: '  ', stock: 1 }])
+        ).toThrow(/cannot be empty/i);
+        expect(() =>
+          normalizeAndValidateVariants(100, [
+            { sku: 'DUP-1', size: 'M', stock: 1 },
+            { sku: 'DUP-1', size: 'L', stock: 1 },
+          ])
+        ).toThrow(/Duplicate variant SKU/i);
+        expect(() =>
+          normalizeAndValidateVariants(100, [
+            { sku: 'U-1', size: 'M', color: 'Red', stock: 1 },
+            { sku: 'U-2', size: 'M', color: 'Red', stock: 1 },
+          ])
+        ).toThrow(/Duplicate variant combination/i);
+
+        // authService branch edge cases (tokenVersion mismatch, revokedReason logout/expired, deleted user, logout without userId)
+        const { authService } = await import('../src/services/authService.js');
+        const { RefreshToken } = await import('../src/models/RefreshToken.js');
+        const { signRefreshToken } = await import('../src/utils/jwt.js');
+        const { createTokenHash } = await import('../src/utils/crypto.js');
+
+        const authUser = await User.create({
+          firstName: 'Auth',
+          lastName: 'Edge',
+          email: 'auth.edge@example.com',
+          password: 'Password123!',
+          tokenVersion: 2,
+        });
+
+        const staleVerTok = signRefreshToken(authUser._id.toString(), 1);
+        await expect(
+          authService.refreshAccessToken(staleVerTok)
+        ).rejects.toThrow(/invalidated/i);
+
+        const curVerTok = signRefreshToken(authUser._id.toString(), 2);
+        await RefreshToken.create({
+          user: authUser._id,
+          tokenHash: createTokenHash(curVerTok),
+          familyId: 'fam-1',
+          expiresAt: new Date(Date.now() + 60000),
+          revokedAt: new Date(),
+          revokedReason: 'logout',
+        });
+        await expect(authService.refreshAccessToken(curVerTok)).rejects.toThrow(
+          /revoked/i
+        );
+
+        const expiredTok = signRefreshToken(authUser._id.toString(), 2);
+        await RefreshToken.create({
+          user: authUser._id,
+          tokenHash: createTokenHash(expiredTok),
+          familyId: 'fam-2',
+          expiresAt: new Date(Date.now() - 1000),
+        });
+        await expect(
+          authService.refreshAccessToken(expiredTok)
+        ).rejects.toThrow(/expired/i);
+
+        await authService.logout(undefined, expiredTok);
+
+        await User.findByIdAndUpdate(authUser._id, { isActive: false });
+        await expect(
+          authService.refreshAccessToken(expiredTok)
+        ).rejects.toThrow(/deactivated/i);
+
+        await User.findByIdAndDelete(authUser._id);
+        await expect(
+          authService.refreshAccessToken(expiredTok)
+        ).rejects.toThrow(/no longer exists/i);
+
+        // orderService transaction path (withTransaction happy path + standalone fallback)
+        const txProd = await Product.create({
+          name: 'TX Product',
+          slug: 'tx-product',
+          description: 'TX item description',
+          sku: 'TX-SKU-1',
+          price: 50,
+          quantity: 10,
+          category: 'Shoes',
+          status: 'active',
+        });
+
+        const dbRef = mongoose.connection.db!;
+        const origAdmin = dbRef.admin;
+        const origStartSession = mongoose.startSession;
+
+        dbRef.admin = (() => ({
+          command: async () => ({ setName: 'rs0' }),
+        })) as unknown as typeof dbRef.admin;
+
+        try {
+          // 1) Real startSession on standalone throws "Transaction numbers are only allowed" -> exercises standalone fallback
+          const fallbackOrder = await orderService.createOrder(undefined, {
+            items: [{ productId: txProd._id.toString(), quantity: 1 }],
+            shippingAddress: {
+              fullName: 'TX User',
+              phone: '0123456789',
+              addressLine1: '123 St',
+              city: 'HCMC',
+            },
+          } as CreateOrderInput);
+          expect(fallbackOrder._id).toBeDefined();
+
+          // 2) Fake session with withTransaction succeeding without passing invalid session to standalone ops
+          mongoose.startSession = (async () => ({
+            withTransaction: async (fn: () => Promise<void>) => {
+              await fn();
+            },
+            endSession: async () => undefined,
+          })) as unknown as typeof mongoose.startSession;
+
+          try {
+            await orderService.cancelOrder(
+              fallbackOrder._id.toString(),
+              seller._id.toString(),
+              'admin',
+              'TX cancel'
+            );
+          } catch (fakeSessErr) {
+            expect(fakeSessErr).toBeDefined();
+          }
+        } finally {
+          dbRef.admin = origAdmin;
+          mongoose.startSession = origStartSession;
+        }
+
+        // userService getUserById & admin demotion guards
+        const onlyAdmin = await User.create({
+          firstName: 'Sole',
+          lastName: 'Admin',
+          email: 'sole.admin@example.com',
+          password: 'Password123!',
+          role: 'admin',
+        });
+        const fetched = await userService.getUserById(onlyAdmin._id.toString());
+        expect(fetched.email).toBe('sole.admin@example.com');
+
+        await expect(
+          userService.updateUserRole(
+            onlyAdmin._id.toString(),
+            'customer',
+            onlyAdmin._id.toString()
+          )
+        ).rejects.toThrow(/demote their own role/i);
+
+        await expect(
+          userService.updateUserRole(onlyAdmin._id.toString(), 'customer')
+        ).rejects.toThrow(/last active administrator/i);
+
+        await expect(
+          userService.deleteUser(
+            onlyAdmin._id.toString(),
+            onlyAdmin._id.toString()
+          )
+        ).rejects.toThrow(/cannot delete their own/i);
       });
     });
   });

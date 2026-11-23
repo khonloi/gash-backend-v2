@@ -59,7 +59,6 @@ const orderSchema = new Schema<IOrder>(
     user: {
       type: Schema.Types.ObjectId,
       ref: 'User',
-      index: true,
     },
     items: {
       type: [orderItemSchema],
@@ -115,7 +114,6 @@ const orderSchema = new Schema<IOrder>(
         message: '{VALUE} is not a valid payment status',
       },
       default: 'pending',
-      index: true,
     },
     status: {
       type: String,
@@ -132,7 +130,6 @@ const orderSchema = new Schema<IOrder>(
         message: '{VALUE} is not a valid order status',
       },
       default: 'pending',
-      index: true,
     },
     contactEmail: {
       type: String,
@@ -148,6 +145,11 @@ const orderSchema = new Schema<IOrder>(
       trim: true,
       maxlength: [1000, 'Notes cannot exceed 1000 characters'],
     },
+    idempotencyKey: {
+      type: String,
+      trim: true,
+      maxlength: [128, 'Idempotency key cannot exceed 128 characters'],
+    },
     cancelledAt: {
       type: Date,
     },
@@ -162,6 +164,9 @@ const orderSchema = new Schema<IOrder>(
     shippedAt: {
       type: Date,
     },
+    refundedAt: {
+      type: Date,
+    },
   },
   {
     timestamps: true,
@@ -171,8 +176,12 @@ const orderSchema = new Schema<IOrder>(
 );
 
 // Indexes
+orderSchema.index({ createdAt: -1 });
 orderSchema.index({ user: 1, createdAt: -1 });
+orderSchema.index({ user: 1, status: 1, createdAt: -1 });
 orderSchema.index({ status: 1, createdAt: -1 });
+orderSchema.index({ idempotencyKey: 1 }, { unique: true, sparse: true });
+orderSchema.index({ orderNumber: 'text', contactEmail: 'text' });
 
 // Virtual for item count
 orderSchema.virtual('itemCount').get(function (this: IOrder) {
@@ -183,7 +192,7 @@ orderSchema.virtual('itemCount').get(function (this: IOrder) {
 orderSchema.pre('validate', function () {
   if (!this.orderNumber) {
     const dateStr = new Date().toISOString().slice(2, 10).replace(/-/g, '');
-    const randomHex = crypto.randomBytes(3).toString('hex').toUpperCase();
+    const randomHex = crypto.randomBytes(4).toString('hex').toUpperCase();
     this.orderNumber = `GS-${dateStr}-${randomHex}`;
   }
 });

@@ -15,23 +15,22 @@ declare global {
 }
 
 export function extractBearerToken(req: Request): string | undefined {
-  if (
-    req.headers.authorization &&
-    req.headers.authorization.startsWith('Bearer ')
-  ) {
-    return req.headers.authorization.split(' ')[1];
-  }
-  return undefined;
+  const authHeader = req.headers.authorization;
+  if (!authHeader) return undefined;
+  const match = /^Bearer\s+(\S+)$/i.exec(authHeader.trim());
+  return match ? match[1] : undefined;
 }
 
 export async function verifyUserFromToken(token: string): Promise<IUser> {
-  const decoded = verifyToken(token);
+  const decoded = verifyToken(token, 'access');
 
   if (decoded.type !== 'access') {
     throw new AppError('Invalid token type. An access token is required.', 401);
   }
 
-  const currentUser = await User.findById(decoded.id);
+  const currentUser = await User.findById(decoded.id).select(
+    '+tokenVersion +passwordChangedAt'
+  );
 
   if (!currentUser) {
     throw new AppError(
@@ -47,7 +46,17 @@ export async function verifyUserFromToken(token: string): Promise<IUser> {
     );
   }
 
-  if (decoded.iat && currentUser.changedPasswordAfter(decoded.iat)) {
+  if (
+    decoded.tokenVersion !== undefined &&
+    decoded.tokenVersion !== (currentUser.tokenVersion ?? 0)
+  ) {
+    throw new AppError(
+      'Your session is no longer valid. Please log in again.',
+      401
+    );
+  }
+
+  if (!decoded.iat || currentUser.changedPasswordAfter(decoded.iat)) {
     throw new AppError(
       'User recently changed password! Please log in again.',
       401
@@ -86,8 +95,12 @@ export const optionalAuth: RequestHandler = catchAsync(
 
     try {
       req.user = await verifyUserFromToken(token);
-    } catch {
-      // Ignore token verification errors for optional auth
+    } catch (err: unknown) {
+      if (err instanceof AppError && err.statusCode === 401) {
+        // Ignore invalid/expired token errors for optional auth
+      } else {
+        return next(err);
+      }
     }
 
     next();

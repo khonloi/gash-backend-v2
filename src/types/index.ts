@@ -1,4 +1,5 @@
 import mongoose, { Document } from 'mongoose';
+import type { IUser } from './user.js';
 
 export type ProductStatus = 'draft' | 'active' | 'archived';
 
@@ -10,11 +11,13 @@ export interface IProductImage {
 }
 
 export interface IProductVariant {
-  name: string;
-  options: string[];
-  sku?: string;
+  _id?: mongoose.Types.ObjectId;
+  sku: string;
+  size?: string;
+  color?: string;
+  price?: number;
   priceModifier?: number;
-  stock?: number;
+  stock: number;
 }
 
 export interface IProductDimensions {
@@ -36,6 +39,7 @@ export interface IProductCategoryStats {
 export interface IProduct extends Document {
   name: string;
   slug: string;
+  seller?: mongoose.Types.ObjectId | IUser;
   description: string;
   shortDescription?: string;
   price: number;

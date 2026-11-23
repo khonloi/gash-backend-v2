@@ -1,5 +1,6 @@
 import { User } from '../models/User.js';
 import { Cart } from '../models/Cart.js';
+import { RefreshToken } from '../models/RefreshToken.js';
 import {
   IAddress,
   IUser,
@@ -9,31 +10,37 @@ import {
 } from '../types/index.js';
 import { AppError } from '../utils/AppError.js';
 import { paginateQuery } from '../utils/apiFeatures.js';
+import { MAX_USER_ADDRESSES, SAFE_USER_FIELDS } from '../config/constants.js';
 import {
   UpdateMeInput,
   AddressInput,
   UpdateAddressInput,
 } from '../validations/userValidation.js';
 import { ChangePasswordInput } from '../validations/authValidation.js';
-import { AuthResponse, issueTokensAndSave } from './authService.js';
+import {
+  AuthSessionResult,
+  issueTokensAndSave,
+  toSafeUser,
+  type ISafeUser,
+} from './authService.js';
 import { assertObjectId } from '../utils/objectId.js';
 
 export class UserService {
   /**
    * Get current user profile
    */
-  async getMe(userId: string): Promise<IUser> {
+  async getMe(userId: string): Promise<ISafeUser> {
     const user = await User.findById(userId);
     if (!user) {
       throw new AppError('User not found', 404);
     }
-    return user;
+    return toSafeUser(user);
   }
 
   /**
    * Update current user profile fields (excludes password and role)
    */
-  async updateMe(userId: string, data: UpdateMeInput): Promise<IUser> {
+  async updateMe(userId: string, data: UpdateMeInput): Promise<ISafeUser> {
     const filteredData: Partial<
       Pick<IUser, 'firstName' | 'lastName' | 'phone' | 'avatar'>
     > = {};
@@ -51,7 +58,7 @@ export class UserService {
       throw new AppError('User not found', 404);
     }
 
-    return user;
+    return toSafeUser(user);
   }
 
   /**
@@ -60,8 +67,8 @@ export class UserService {
   async changePassword(
     userId: string,
     data: ChangePasswordInput
-  ): Promise<AuthResponse> {
-    const user = await User.findById(userId).select('+password +refreshTokens');
+  ): Promise<AuthSessionResult> {
+    const user = await User.findById(userId).select('+password +tokenVersion');
     if (!user) {
       throw new AppError('User not found', 404);
     }
@@ -71,21 +78,28 @@ export class UserService {
     }
 
     user.password = data.newPassword;
+    user.tokenVersion = (user.tokenVersion ?? 0) + 1;
+
+    // Persist password & tokenVersion BEFORE issuing new JWTs
+    await user.save();
+
     return issueTokensAndSave(user, true);
   }
 
   /**
-   * Soft delete user account (set isActive: false and invalidate sessions)
+   * Soft delete user account (set isActive: false and invalidate all sessions)
    */
   async deactivateMe(userId: string): Promise<void> {
     const user = await User.findByIdAndUpdate(userId, {
       isActive: false,
-      refreshTokens: [],
+      $inc: { tokenVersion: 1 },
     });
 
     if (!user) {
       throw new AppError('User not found', 404);
     }
+
+    await RefreshToken.deleteMany({ user: userId });
   }
 
   /**
@@ -111,15 +125,24 @@ export class UserService {
       throw new AppError('User not found', 404);
     }
 
+    if (user.addresses.length >= MAX_USER_ADDRESSES) {
+      throw new AppError(
+        `You cannot store more than ${MAX_USER_ADDRESSES} addresses`,
+        400
+      );
+    }
+
+    const newAddress: IAddress = { ...addressData };
+
     // If marked as default or it's the first address, unset others
-    if (addressData.isDefault || user.addresses.length === 0) {
+    if (newAddress.isDefault || user.addresses.length === 0) {
       user.addresses.forEach((addr) => {
         addr.isDefault = false;
       });
-      addressData.isDefault = true;
+      newAddress.isDefault = true;
     }
 
-    user.addresses.push(addressData as IAddress);
+    user.addresses.push(newAddress);
     await user.save();
 
     return user.addresses;
@@ -133,6 +156,8 @@ export class UserService {
     addressId: string,
     data: UpdateAddressInput
   ): Promise<IAddress[]> {
+    assertObjectId(addressId, 'address ID');
+
     const user = await User.findById(userId);
     if (!user) {
       throw new AppError('User not found', 404);
@@ -150,6 +175,17 @@ export class UserService {
       user.addresses.forEach((addr) => {
         addr.isDefault = false;
       });
+    } else if (
+      data.isDefault === false &&
+      address.isDefault &&
+      user.addresses.length > 1
+    ) {
+      const fallback = user.addresses.find(
+        (addr) => addr._id?.toString() !== addressId
+      );
+      if (fallback) {
+        fallback.isDefault = true;
+      }
     }
 
     Object.assign(address, data);
@@ -162,6 +198,8 @@ export class UserService {
    * Remove an address
    */
   async removeAddress(userId: string, addressId: string): Promise<IAddress[]> {
+    assertObjectId(addressId, 'address ID');
+
     const user = await User.findById(userId);
     if (!user) {
       throw new AppError('User not found', 404);
@@ -193,13 +231,32 @@ export class UserService {
    * Admin: Get all users with search, filtering, and pagination
    */
   async getAllUsers(queryString: QueryString): Promise<PaginatedResult<IUser>> {
-    return paginateQuery(() => User.find(), queryString, { search: true });
+    const normalizedQuery: QueryString = {
+      ...queryString,
+      ...(queryString.search && !queryString.keyword
+        ? { keyword: String(queryString.search) }
+        : {}),
+    };
+
+    return paginateQuery(() => User.find(), normalizedQuery, {
+      search: true,
+      allowedFilterFields: ['role', 'isActive', 'isEmailVerified'],
+      allowedSortFields: [
+        'createdAt',
+        'updatedAt',
+        'firstName',
+        'lastName',
+        'email',
+        'role',
+      ],
+      allowedSelectFields: SAFE_USER_FIELDS,
+    });
   }
 
   /**
    * Admin: Get a user by ID
    */
-  async getUserById(id: string): Promise<IUser> {
+  async getUserById(id: string): Promise<ISafeUser> {
     assertObjectId(id, 'user ID');
 
     const user = await User.findById(id);
@@ -207,26 +264,51 @@ export class UserService {
       throw new AppError(`No user found with ID "${id}"`, 404);
     }
 
-    return user;
+    return toSafeUser(user);
   }
 
   /**
-   * Admin: Update user role
+   * Admin: Update user role (prevents self-demotion and revokes sessions on role change)
    */
-  async updateUserRole(id: string, role: UserRole): Promise<IUser> {
+  async updateUserRole(
+    id: string,
+    role: UserRole,
+    actorId?: string
+  ): Promise<ISafeUser> {
     assertObjectId(id, 'user ID');
 
-    const user = await User.findByIdAndUpdate(
-      id,
-      { role },
-      { returnDocument: 'after', runValidators: true }
-    );
+    if (actorId && actorId === id && role !== 'admin') {
+      throw new AppError('Administrators cannot demote their own role', 400);
+    }
 
-    if (!user) {
+    const existing = await User.findById(id);
+    if (!existing) {
       throw new AppError(`No user found with ID "${id}"`, 404);
     }
 
-    return user;
+    if (existing.role === 'admin' && role !== 'admin') {
+      const otherAdmins = await User.countDocuments({
+        _id: { $ne: id },
+        role: 'admin',
+        isActive: true,
+      });
+      if (otherAdmins === 0) {
+        throw new AppError('Cannot demote the last active administrator', 400);
+      }
+    }
+
+    const roleChanged = existing.role !== role;
+    existing.role = role;
+    if (roleChanged) {
+      existing.tokenVersion = (existing.tokenVersion ?? 0) + 1;
+    }
+    await existing.save();
+
+    if (roleChanged) {
+      await RefreshToken.deleteMany({ user: id });
+    }
+
+    return toSafeUser(existing);
   }
 
   /**
@@ -244,8 +326,11 @@ export class UserService {
       throw new AppError(`No user found with ID "${id}"`, 404);
     }
 
-    // Cascade: Clean up associated user cart
-    await Cart.findOneAndDelete({ user: id });
+    // Cascade: Clean up associated user cart & refresh tokens
+    await Promise.all([
+      Cart.findOneAndDelete({ user: id }),
+      RefreshToken.deleteMany({ user: id }),
+    ]);
   }
 }
 

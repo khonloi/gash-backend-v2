@@ -28,20 +28,23 @@ const productImageSchema = new Schema<IProductImage>(
 
 const productVariantSchema = new Schema<IProductVariant>(
   {
-    name: {
-      type: String,
-      required: [true, 'Variant name is required (e.g. Size, Color)'],
-      trim: true,
-    },
-    options: {
-      type: [String],
-      required: [true, 'Variant options are required'],
-      default: [],
-    },
     sku: {
       type: String,
+      required: [true, 'Variant SKU is required'],
       trim: true,
       uppercase: true,
+    },
+    size: {
+      type: String,
+      trim: true,
+    },
+    color: {
+      type: String,
+      trim: true,
+    },
+    price: {
+      type: Number,
+      min: [0, 'Variant price cannot be negative'],
     },
     priceModifier: {
       type: Number,
@@ -49,11 +52,12 @@ const productVariantSchema = new Schema<IProductVariant>(
     },
     stock: {
       type: Number,
+      required: [true, 'Variant stock is required'],
       default: 0,
       min: [0, 'Variant stock cannot be negative'],
     },
   },
-  { _id: false }
+  { _id: true }
 );
 
 const productSchema = new Schema<IProduct>(
@@ -67,9 +71,15 @@ const productSchema = new Schema<IProduct>(
     },
     slug: {
       type: String,
+      required: [true, 'Product slug is required'],
       unique: true,
       lowercase: true,
       trim: true,
+    },
+    seller: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      index: true,
     },
     description: {
       type: String,
@@ -92,8 +102,15 @@ const productSchema = new Schema<IProduct>(
       min: [0, 'Compare at price must be greater than or equal to 0'],
       validate: {
         validator: function (this: IProduct, val: number): boolean {
-          // Only validate if compareAtPrice is provided
-          return !val || val > this.price;
+          // On Query update validators `this` is a Query, not IProduct;
+          // ProductService enforces cross-field validation for updates.
+          if (typeof this.price !== 'number') {
+            return true;
+          }
+          if (val === undefined || val === null) {
+            return true;
+          }
+          return val > this.price;
         },
         message:
           'Compare at price ({VALUE}) must be higher than the regular price',
@@ -102,6 +119,7 @@ const productSchema = new Schema<IProduct>(
     costPrice: {
       type: Number,
       min: [0, 'Cost price must be greater than or equal to 0'],
+      select: false,
     },
     sku: {
       type: String,
@@ -129,11 +147,11 @@ const productSchema = new Schema<IProduct>(
       type: String,
       required: [true, 'Product category is required'],
       trim: true,
-      index: true,
     },
     subcategory: {
       type: String,
       trim: true,
+      index: true,
     },
     brand: {
       type: String,
@@ -165,7 +183,6 @@ const productSchema = new Schema<IProduct>(
         message: '{VALUE} is not a valid status',
       },
       default: 'draft',
-      index: true,
     },
     isFeatured: {
       type: Boolean,
@@ -201,9 +218,11 @@ const productSchema = new Schema<IProduct>(
   }
 );
 
-// Compound indexes
+// Compound & query-aligned indexes
 productSchema.index({ category: 1, price: 1 });
-productSchema.index({ status: 1, isFeatured: 1 });
+productSchema.index({ status: 1, isFeatured: 1, ratingsAverage: -1 });
+productSchema.index({ price: 1 });
+productSchema.index({ createdAt: -1 });
 productSchema.index({ name: 'text', description: 'text', tags: 'text' });
 
 // Virtuals

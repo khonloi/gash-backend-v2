@@ -1,18 +1,32 @@
 import { Request, Response } from 'express';
 import { catchAsync } from '../utils/catchAsync.js';
-import { productService } from '../services/productService.js';
+import { productService, ProductActor } from '../services/productService.js';
 import { sendPaginated, sendSuccess } from '../utils/response.js';
+
+function getOptionalProductActor(req: Request): ProductActor | undefined {
+  if (!req.user) return undefined;
+  return {
+    id: req.user._id.toString(),
+    role: req.user.role,
+  };
+}
 
 export const createProduct = catchAsync(
   async (req: Request, res: Response): Promise<void> => {
-    const product = await productService.createProduct(req.body);
+    const product = await productService.createProduct(
+      req.body,
+      req.user?._id?.toString()
+    );
     sendSuccess(res, { product }, 201);
   }
 );
 
 export const getAllProducts = catchAsync(
   async (req: Request, res: Response): Promise<void> => {
-    const result = await productService.getAllProducts(req.query);
+    const result = await productService.getAllProducts(
+      req.query,
+      getOptionalProductActor(req)
+    );
     sendPaginated(res, 'products', result);
   }
 );
@@ -20,7 +34,8 @@ export const getAllProducts = catchAsync(
 export const getProduct = catchAsync(
   async (req: Request, res: Response): Promise<void> => {
     const product = await productService.getProductById(
-      req.params.id as string
+      req.params.id as string,
+      getOptionalProductActor(req)
     );
     sendSuccess(res, { product });
   }
@@ -29,7 +44,8 @@ export const getProduct = catchAsync(
 export const getProductBySlug = catchAsync(
   async (req: Request, res: Response): Promise<void> => {
     const product = await productService.getProductBySlug(
-      req.params.slug as string
+      req.params.slug as string,
+      getOptionalProductActor(req)
     );
     sendSuccess(res, { product });
   }
@@ -39,7 +55,8 @@ export const updateProduct = catchAsync(
   async (req: Request, res: Response): Promise<void> => {
     const product = await productService.updateProduct(
       req.params.id as string,
-      req.body
+      req.body,
+      getOptionalProductActor(req)
     );
     sendSuccess(res, { product });
   }
@@ -48,7 +65,7 @@ export const updateProduct = catchAsync(
 export const deleteProduct = catchAsync(
   async (req: Request, res: Response): Promise<void> => {
     await productService.deleteProduct(req.params.id as string);
-    sendSuccess(res, null, 204);
+    res.status(204).send();
   }
 );
 
@@ -58,7 +75,8 @@ export const updateStock = catchAsync(
     const product = await productService.updateProductStock(
       req.params.id as string,
       quantity,
-      operation
+      operation,
+      getOptionalProductActor(req)
     );
     sendSuccess(res, { product });
   }

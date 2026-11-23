@@ -1,19 +1,40 @@
 import { z } from 'zod';
-import { paginationQuerySchema } from './commonValidation.js';
+import {
+  booleanQuerySchema,
+  numericComparisonFilterSchema,
+  paginationQuerySchema,
+} from './commonValidation.js';
 
 const productImageSchema = z.object({
-  url: z.string().min(1, 'Image URL cannot be empty'),
-  altText: z.string().optional(),
+  url: z
+    .string()
+    .trim()
+    .min(1, 'Image URL cannot be empty')
+    .max(2048, 'Image URL cannot exceed 2048 characters')
+    .url('Image URL must be a valid URL')
+    .refine(
+      (url) => url.startsWith('https://') || url.startsWith('http://'),
+      'Image URL must use http:// or https://'
+    ),
+  altText: z.string().trim().max(200).optional(),
   isPrimary: z.boolean().optional(),
-  displayOrder: z.number().int().optional(),
+  displayOrder: z.number().int().min(0).optional(),
 });
 
 const productVariantSchema = z.object({
-  name: z.string().min(1, 'Variant name is required'),
-  options: z.array(z.string()).min(1, 'Variant must have at least one option'),
-  sku: z.string().optional(),
+  sku: z
+    .string({ message: 'Variant SKU is required' })
+    .trim()
+    .min(1, 'Variant SKU cannot be empty')
+    .max(64, 'Variant SKU cannot exceed 64 characters'),
+  size: z.string().trim().max(40).optional(),
+  color: z.string().trim().max(40).optional(),
+  price: z.number().min(0, 'Variant price cannot be negative').optional(),
   priceModifier: z.number().optional(),
-  stock: z.number().int().min(0, 'Variant stock cannot be negative').optional(),
+  stock: z
+    .number({ message: 'Variant stock is required' })
+    .int('Variant stock must be an integer')
+    .min(0, 'Variant stock cannot be negative'),
 });
 
 const dimensionsSchema = z.object({
@@ -67,9 +88,9 @@ export const createProductSchema = z.object({
     .min(1, 'Category cannot be empty'),
   subcategory: z.string().trim().optional(),
   brand: z.string().trim().optional(),
-  tags: z.array(z.string().trim()).default([]),
-  images: z.array(productImageSchema).default([]),
-  variants: z.array(productVariantSchema).default([]),
+  tags: z.array(z.string().trim().max(50)).max(50).default([]),
+  images: z.array(productImageSchema).max(20).default([]),
+  variants: z.array(productVariantSchema).max(50).default([]),
   attributes: z.record(z.string(), z.string()).optional(),
   status: z.enum(['draft', 'active', 'archived']).default('draft'),
   isFeatured: z.boolean().default(false),
@@ -85,17 +106,28 @@ export const updateStockSchema = z.object({
 });
 
 export const productQuerySchema = paginationQuerySchema.extend({
-  keyword: z.string().optional(),
-  category: z.string().optional(),
-  subcategory: z.string().optional(),
-  brand: z.string().optional(),
+  keyword: z.string().trim().max(200).optional(),
+  category: z.string().trim().max(100).optional(),
+  subcategory: z.string().trim().max(100).optional(),
+  brand: z.string().trim().max(100).optional(),
   status: z.enum(['draft', 'active', 'archived']).optional(),
-  isFeatured: z.coerce.boolean().optional(),
+  isFeatured: booleanQuerySchema.optional(),
   minPrice: z.coerce.number().min(0).optional(),
   maxPrice: z.coerce.number().min(0).optional(),
+  tags: z.union([z.string().trim(), z.array(z.string().trim())]).optional(),
+  price: numericComparisonFilterSchema.optional(),
+  ratingsAverage: numericComparisonFilterSchema.optional(),
+  ratingsQuantity: numericComparisonFilterSchema.optional(),
+});
+
+export const featuredProductsQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(50).default(10),
 });
 
 export type CreateProductInput = z.infer<typeof createProductSchema>;
 export type UpdateProductInput = z.infer<typeof updateProductSchema>;
 export type UpdateStockInput = z.infer<typeof updateStockSchema>;
 export type ProductQueryInput = z.infer<typeof productQuerySchema>;
+export type FeaturedProductsQueryInput = z.infer<
+  typeof featuredProductsQuerySchema
+>;

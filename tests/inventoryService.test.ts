@@ -137,4 +137,44 @@ describe('InventoryService Unit Tests', () => {
     const updated = await Product.findById(prod._id);
     expect(updated?.quantity).toBe(8);
   });
+
+  it('should rollback per-SKU variant stock if a subsequent item fails', async () => {
+    const varProd = await Product.create({
+      name: 'Variant Jersey',
+      slug: 'variant-jersey',
+      description: 'Jersey',
+      sku: 'JRS-BASE',
+      price: 60,
+      quantity: 5,
+      category: 'Apparel',
+      status: 'active',
+      variants: [{ sku: 'JRS-M-BLU', size: 'M', color: 'Blue', stock: 5 }],
+    });
+    const outProd = await Product.create({
+      name: 'Limited Cap',
+      slug: 'limited-cap',
+      description: 'Cap',
+      sku: 'CAP-1',
+      price: 20,
+      quantity: 1,
+      category: 'Accessories',
+      status: 'active',
+    });
+
+    await expect(
+      inventoryService.processOrderItems([
+        {
+          productId: varProd._id.toString(),
+          quantity: 3,
+          size: 'M',
+          color: 'Blue',
+        },
+        { productId: outProd._id.toString(), quantity: 4 },
+      ])
+    ).rejects.toThrow('Insufficient stock');
+
+    const refreshed = await Product.findById(varProd._id);
+    expect(refreshed?.quantity).toBe(5);
+    expect(refreshed?.variants[0].stock).toBe(5);
+  });
 });

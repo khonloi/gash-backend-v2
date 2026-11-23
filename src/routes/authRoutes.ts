@@ -10,36 +10,32 @@ import {
   verifyEmail,
 } from '../controllers/authController.js';
 import { validate } from '../middlewares/validate.js';
-import { protect } from '../middlewares/auth.js';
+import { optionalAuth, protect } from '../middlewares/auth.js';
 import {
   registerSchema,
   loginSchema,
-  refreshTokenSchema,
   forgotPasswordSchema,
   resetPasswordSchema,
+  verifyEmailSchema,
 } from '../validations/authValidation.js';
 
 const router: Router = Router();
 
 router.post('/register', validate(registerSchema, 'body'), register);
 router.post('/login', validate(loginSchema, 'body'), login);
-router.post(
-  '/refresh-token',
-  validate(refreshTokenSchema, 'body'),
-  refreshToken
-);
-router.post('/logout', protect, logout);
+router.post('/refresh-token', refreshToken);
+router.post('/logout', optionalAuth, logout);
 router.post('/logout-all', protect, logoutAll);
 router.post(
   '/forgot-password',
   validate(forgotPasswordSchema, 'body'),
   forgotPassword
 );
-router.patch(
-  '/reset-password/:token',
+router.post(
+  '/reset-password',
   validate(resetPasswordSchema, 'body'),
   resetPassword
 );
-router.get('/verify-email/:token', verifyEmail);
+router.post('/verify-email', validate(verifyEmailSchema, 'body'), verifyEmail);
 
 export default router;

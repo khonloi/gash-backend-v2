@@ -40,14 +40,19 @@ const cartSchema = new Schema<ICart>(
 );
 
 cartSchema.virtual('totalPrice').get(function (this: ICart) {
-  return this.items.reduce(
-    (total, item) => total + item.priceAtAdd * item.quantity,
-    0
-  );
+  const cents = this.items.reduce((total, item) => {
+    // Skip orphaned items whose referenced product was deleted
+    if (!item.product) return total;
+    return total + Math.round(item.priceAtAdd * 100) * item.quantity;
+  }, 0);
+  return cents / 100;
 });
 
 cartSchema.virtual('totalItems').get(function (this: ICart) {
-  return this.items.reduce((total, item) => total + item.quantity, 0);
+  return this.items.reduce((total, item) => {
+    if (!item.product) return total;
+    return total + item.quantity;
+  }, 0);
 });
 
 export const Cart: Model<ICart> = mongoose.model<ICart>('Cart', cartSchema);

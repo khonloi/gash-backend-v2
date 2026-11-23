@@ -9,6 +9,30 @@ export const REFRESH_TOKEN_GRACE_PERIOD_MS = 30 * 1000; // 30 seconds rotation g
 export const PASSWORD_RESET_EXPIRES_MS = 10 * 60 * 1000; // 10 minutes
 export const EMAIL_VERIFICATION_EXPIRES_MS = 24 * 60 * 60 * 1000; // 24 hours
 export const MAX_ACTIVE_REFRESH_TOKENS = 10;
+export const MAX_USER_ADDRESSES = 20;
+
+const DURATION_UNITS_MS: Record<string, number> = {
+  ms: 1,
+  s: 1000,
+  m: 60 * 1000,
+  h: 60 * 60 * 1000,
+  d: 24 * 60 * 60 * 1000,
+  w: 7 * 24 * 60 * 60 * 1000,
+};
+
+/**
+ * Converts a JWT-style duration string (e.g. '7d', '15m') to milliseconds.
+ */
+export function parseDurationToMs(
+  duration: string,
+  fallbackMs: number
+): number {
+  const match = /^(\d+)(ms|s|m|h|d|w)$/i.exec(duration.trim());
+  if (!match) return fallbackMs;
+  const amount = Number(match[1]);
+  const unit = match[2].toLowerCase();
+  return amount * (DURATION_UNITS_MS[unit] ?? 1000);
+}
 
 /**
  * E-commerce Shipping Fees (in USD or base currency)
@@ -63,7 +87,7 @@ export const CHAT_PRODUCT_PROJECTION =
 export const CHAT_ORDER_PROJECTION =
   'orderNumber status paymentStatus shippingMethod subtotal shippingFee total createdAt';
 
-export const CHAT_USER_PROJECTION = '_id firstName lastName avatar role email';
+export const CHAT_USER_PROJECTION = '_id firstName lastName avatar role';
 
 export const MAX_CONTEXT_CARDS_PER_MESSAGE = 5;
 export const DEFAULT_CHAT_PAGE_LIMIT = 30;

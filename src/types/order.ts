@@ -55,10 +55,12 @@ export interface IOrder extends Document {
   contactEmail?: string;
   contactPhone?: string;
   notes?: string;
+  idempotencyKey?: string;
   cancelledAt?: Date;
   cancelReason?: string;
   deliveredAt?: Date;
   shippedAt?: Date;
+  refundedAt?: Date;
   createdAt: Date;
   updatedAt: Date;
 }

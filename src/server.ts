@@ -1,3 +1,4 @@
+import http from 'http';
 import mongoose from 'mongoose';
 import { env } from './config/env.js';
 import app from './app.js';
@@ -6,42 +7,18 @@ import { logger } from './config/logger.js';
 import { initSocketServer, closeSocketServer } from './socket/index.js';
 
 process.on('uncaughtException', (err: Error) => {
-  logger.error('UNCAUGHT EXCEPTION! Shutting down...');
-  logger.error(`${err.name}: ${err.message}`);
+  logger.error('UNCAUGHT EXCEPTION! Shutting down...', {
+    name: err.name,
+    message: err.message,
+    stack: err.stack,
+  });
   process.exit(1);
 });
 
-// Connect to database
-if (env.MONGO_URI) {
-  connectDB();
-} else {
-  logger.warn(
-    'MONGO_URI is not defined. Server running without MongoDB connection.'
-  );
-}
-
-const server = app.listen(env.PORT, () => {
-  logger.info(`Server running in ${env.NODE_ENV} mode on port ${env.PORT}`);
-});
-
-// Initialize Socket.IO server
-initSocketServer(server);
-
-process.on('unhandledRejection', (reason: unknown) => {
-  logger.error('UNHANDLED REJECTION! Shutting down...');
-  if (reason instanceof Error) {
-    logger.error(`${reason.name}: ${reason.message}`);
-  } else {
-    logger.error(`Reason: ${String(reason)}`);
-  }
-  server.close(() => {
-    process.exit(1);
-  });
-});
-
+let server: http.Server | null = null;
 let isShuttingDown = false;
 
-const gracefulShutdown = async (signal: string) => {
+const gracefulShutdown = async (signal: string, exitCode = 0) => {
   if (isShuttingDown) return;
   isShuttingDown = true;
   logger.info(`${signal} received. Initiating graceful shutdown...`);
@@ -53,21 +30,51 @@ const gracefulShutdown = async (signal: string) => {
   }, 10000);
   forceExitTimeout.unref();
 
-  server.close(async () => {
-    logger.info('HTTP server closed. All active requests completed.');
-    try {
-      await closeSocketServer();
-      if (mongoose.connection.readyState !== 0) {
-        await mongoose.disconnect();
-        logger.info('MongoDB connection closed.');
-      }
-      process.exit(0);
-    } catch (err) {
-      logger.error('Error during database disconnection:', err);
-      process.exit(1);
+  try {
+    // Close Socket.IO BEFORE server.close() so open WebSocket connections do not deadlock shutdown
+    await closeSocketServer();
+
+    if (server) {
+      server.closeIdleConnections?.();
+      await new Promise<void>((resolve, reject) => {
+        server!.close((err) => (err ? reject(err) : resolve()));
+      });
+      logger.info('HTTP server closed. All active requests completed.');
     }
-  });
+
+    if (mongoose.connection.readyState !== 0) {
+      await mongoose.disconnect();
+      logger.info('MongoDB connection closed.');
+    }
+
+    process.exit(exitCode);
+  } catch (err) {
+    logger.error('Error during graceful shutdown:', err);
+    process.exit(1);
+  }
 };
 
-process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
-process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+process.on('unhandledRejection', (reason: unknown) => {
+  logger.error('UNHANDLED REJECTION! Shutting down...', {
+    reason:
+      reason instanceof Error
+        ? { name: reason.name, message: reason.message, stack: reason.stack }
+        : String(reason),
+  });
+  void gracefulShutdown('unhandledRejection', 1);
+});
+
+process.on('SIGTERM', () => void gracefulShutdown('SIGTERM', 0));
+process.on('SIGINT', () => void gracefulShutdown('SIGINT', 0));
+
+async function bootstrap(): Promise<void> {
+  await connectDB();
+
+  server = app.listen(env.PORT, () => {
+    logger.info(`Server running in ${env.NODE_ENV} mode on port ${env.PORT}`);
+  });
+
+  initSocketServer(server);
+}
+
+void bootstrap();

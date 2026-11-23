@@ -11,26 +11,31 @@ import {
   getFeaturedProducts,
 } from '../controllers/productController.js';
 import { validate } from '../middlewares/validate.js';
-import { protect, restrictTo } from '../middlewares/auth.js';
+import { optionalAuth, protect, restrictTo } from '../middlewares/auth.js';
 import {
   createProductSchema,
   updateProductSchema,
   updateStockSchema,
   productQuerySchema,
+  featuredProductsQuerySchema,
 } from '../validations/productValidation.js';
 import { idParamSchema } from '../validations/commonValidation.js';
 
 const router: Router = Router();
 
-// Public / special listing routes
-router.get('/stats', getProductStats);
-router.get('/featured', getFeaturedProducts);
-router.get('/slug/:slug', getProductBySlug);
+// Protected stats & public featured/slug routes
+router.get('/stats', protect, restrictTo('admin', 'seller'), getProductStats);
+router.get(
+  '/featured',
+  validate(featuredProductsQuerySchema, 'query'),
+  getFeaturedProducts
+);
+router.get('/slug/:slug', optionalAuth, getProductBySlug);
 
 // Collection routes
 router
   .route('/')
-  .get(validate(productQuerySchema, 'query'), getAllProducts)
+  .get(optionalAuth, validate(productQuerySchema, 'query'), getAllProducts)
   .post(
     protect,
     restrictTo('admin', 'seller'),
@@ -41,7 +46,7 @@ router
 // Single item routes
 router
   .route('/:id')
-  .get(validate(idParamSchema, 'params'), getProduct)
+  .get(optionalAuth, validate(idParamSchema, 'params'), getProduct)
   .patch(
     protect,
     restrictTo('admin', 'seller'),

@@ -5,102 +5,153 @@ import {
   assertConversationAccess,
 } from '../services/chatService.js';
 import { Conversation } from '../models/Conversation.js';
-import { aiChatService } from '../services/aiChatService.js';
 import { logger } from '../config/logger.js';
 import { ChatActor } from '../types/index.js';
-import { isValidObjectId } from '../utils/objectId.js';
+import { AppError } from '../utils/AppError.js';
+import {
+  socketHandoffSchema,
+  socketSendMessageSchema,
+  socketTypingSchema,
+} from '../validations/chatValidation.js';
+import { idParamSchema } from '../validations/commonValidation.js';
+import {
+  emitToConversationParticipants,
+  emitToSupportAgents,
+} from './index.js';
+
+const SOCKET_MSG_WINDOW_MS = 10_000;
+const SOCKET_MSG_MAX_PER_WINDOW = 20;
+
+function toSafeSocketError(err: unknown, fallbackMessage: string): string {
+  if (err instanceof AppError) {
+    return err.message;
+  }
+  return fallbackMessage;
+}
 
 export const registerChatHandlers = (
   io: Server,
   socket: AuthenticatedSocket
-) => {
+): void => {
   const actor: ChatActor = {
     userId: socket.data.userId,
     guestId: socket.data.guestId,
     role: socket.data.role,
   };
 
-  // If user is admin or seller, join the support agents broadcast room
+  // Per-socket sliding-window rate limiter for chat:send_message
+  const sendTimestamps: number[] = [];
+  const checkSocketRateLimit = (): boolean => {
+    const now = Date.now();
+    while (
+      sendTimestamps.length > 0 &&
+      now - sendTimestamps[0] > SOCKET_MSG_WINDOW_MS
+    ) {
+      sendTimestamps.shift();
+    }
+    if (sendTimestamps.length >= SOCKET_MSG_MAX_PER_WINDOW) {
+      return false;
+    }
+    sendTimestamps.push(now);
+    return true;
+  };
+
+  // Staff join support agents room
   if (socket.data.role === 'admin' || socket.data.role === 'seller') {
-    socket.join('support:agents');
+    void socket.join('support:agents');
   }
 
-  // Automatically join actor-specific rooms so events reach customer/guest even before explicit chat:join
+  // Auto-join actor room and bounded active conversations
   if (socket.data.userId) {
-    socket.join(`user:${socket.data.userId}`);
-    Conversation.find({ user: socket.data.userId })
+    void socket.join(`user:${socket.data.userId}`);
+    Conversation.find({
+      user: socket.data.userId,
+      status: { $in: ['bot_active', 'queued', 'assigned'] },
+    })
+      .sort({ lastMessageAt: -1 })
+      .limit(50)
       .select('_id')
       .lean()
       .then((convs) => {
-        convs.forEach((c) => socket.join(`conversation:${String(c._id)}`));
+        if (!socket.connected) return;
+        for (const c of convs) {
+          void socket.join(`conversation:${String(c._id)}`);
+        }
       })
-      .catch(() => {});
+      .catch((err) => {
+        logger.warn('Failed to auto-join user conversation rooms:', err);
+      });
   } else if (socket.data.guestId) {
-    socket.join(`guest:${socket.data.guestId}`);
-    Conversation.find({ guestId: socket.data.guestId })
+    void socket.join(`guest:${socket.data.guestId}`);
+    Conversation.find({
+      guestId: socket.data.guestId,
+      status: { $in: ['bot_active', 'queued', 'assigned'] },
+    })
+      .sort({ lastMessageAt: -1 })
+      .limit(50)
       .select('_id')
       .lean()
       .then((convs) => {
-        convs.forEach((c) => socket.join(`conversation:${String(c._id)}`));
+        if (!socket.connected) return;
+        for (const c of convs) {
+          void socket.join(`conversation:${String(c._id)}`);
+        }
       })
-      .catch(() => {});
+      .catch((err) => {
+        logger.warn('Failed to auto-join guest conversation rooms:', err);
+      });
   }
 
   // Join a conversation room
   socket.on(
     'chat:join',
     async (
-      payload: { conversationId: string },
+      payload: unknown,
       callback?: (res: { success: boolean; error?: string }) => void
     ) => {
       try {
-        const { conversationId } = payload;
-        if (!conversationId || !isValidObjectId(conversationId)) {
-          if (callback)
-            callback({ success: false, error: 'Invalid conversationId' });
+        const parsed = idParamSchema.safeParse({
+          id: (payload as { conversationId?: unknown } | null)?.conversationId,
+        });
+        if (!parsed.success) {
+          callback?.({ success: false, error: 'Invalid conversationId' });
           return;
         }
+        const conversationId = parsed.data.id;
 
         const conversation = await Conversation.findById(conversationId);
         if (!conversation) {
-          if (callback)
-            callback({ success: false, error: 'Conversation not found' });
+          callback?.({ success: false, error: 'Conversation not found' });
           return;
         }
 
         assertConversationAccess(conversation, actor);
-
-        socket.join(`conversation:${conversationId}`);
-        if (callback) callback({ success: true });
+        await socket.join(`conversation:${conversationId}`);
+        callback?.({ success: true });
       } catch (err: unknown) {
-        const message =
-          err instanceof Error ? err.message : 'Failed to join conversation';
-        if (callback) callback({ success: false, error: message });
+        callback?.({
+          success: false,
+          error: toSafeSocketError(err, 'Failed to join conversation'),
+        });
       }
     }
   );
 
   // Leave a conversation room
-  socket.on('chat:leave', (payload: { conversationId: string }) => {
-    if (payload?.conversationId) {
-      socket.leave(`conversation:${payload.conversationId}`);
+  socket.on('chat:leave', (payload: unknown) => {
+    const parsed = idParamSchema.safeParse({
+      id: (payload as { conversationId?: unknown } | null)?.conversationId,
+    });
+    if (parsed.success) {
+      void socket.leave(`conversation:${parsed.data.id}`);
     }
   });
 
-  // Send message over WebSocket
+  // Send message over WebSocket (single unified AI reply path)
   socket.on(
     'chat:send_message',
     async (
-      payload: {
-        conversationId: string;
-        content: string;
-        contextCards?: Array<{
-          cardType: 'product' | 'order';
-          productId?: string;
-          orderId?: string;
-          note?: string;
-        }>;
-      },
+      payload: unknown,
       callback?: (res: {
         success: boolean;
         data?: unknown;
@@ -108,120 +159,138 @@ export const registerChatHandlers = (
       }) => void
     ) => {
       try {
-        const { conversationId, content, contextCards } = payload;
-        if (!content || !content.trim()) {
-          if (callback)
-            callback({ success: false, error: 'Message cannot be empty' });
-          return;
-        }
-
-        const conversation = await Conversation.findById(conversationId);
-        if (!conversation) {
-          if (callback)
-            callback({ success: false, error: 'Conversation not found' });
-          return;
-        }
-
-        assertConversationAccess(conversation, actor);
-
-        // Send message
-        const result = await chatService.sendMessage(actor, conversationId, {
-          content,
-          contextCards,
-        });
-
-        // Broadcast user message to room and support agents
-        io.to(`conversation:${conversationId}`).emit('chat:message', {
-          conversationId,
-          message: result.message,
-        });
-        io.to('support:agents').emit('chat:message', {
-          conversationId,
-          message: result.message,
-        });
-        io.to('support:agents').emit('support:queue_updated', {
-          conversationId,
-          mode: conversation.mode,
-          status: conversation.status,
-        });
-
-        // If conversation is bot_active and sender is customer/guest, stream AI response
-        if (
-          conversation.mode === 'ai' &&
-          conversation.status === 'bot_active' &&
-          socket.data.role !== 'admin' &&
-          socket.data.role !== 'seller'
-        ) {
-          io.to(`conversation:${conversationId}`).emit('chat:ai_typing', {
-            conversationId,
-            isTyping: true,
+        if (!checkSocketRateLimit()) {
+          callback?.({
+            success: false,
+            error: 'Rate limit exceeded. Please slow down.',
           });
+          return;
+        }
 
-          const onChunk = (chunk: string) => {
-            io.to(`conversation:${conversationId}`).emit('chat:ai_chunk', {
+        const parsed = socketSendMessageSchema.safeParse(payload);
+        if (!parsed.success) {
+          const errorMsg = parsed.error.issues[0]?.message || 'Invalid payload';
+          callback?.({ success: false, error: errorMsg });
+          return;
+        }
+
+        const { conversationId, content, contextCards } = parsed.data;
+
+        const result = await chatService.sendMessage(
+          actor,
+          conversationId,
+          { content, contextCards },
+          {
+            onAiStart: () => {
+              io.to(`conversation:${conversationId}`).emit('chat:ai_typing', {
+                conversationId,
+                isTyping: true,
+              });
+            },
+            onChunk: (chunk) => {
+              io.to(`conversation:${conversationId}`).emit('chat:ai_chunk', {
+                conversationId,
+                chunk,
+              });
+            },
+            onAiEnd: () => {
+              io.to(`conversation:${conversationId}`).emit('chat:ai_typing', {
+                conversationId,
+                isTyping: false,
+              });
+            },
+          }
+        );
+
+        emitToConversationParticipants(result.conversation, 'chat:message', {
+          conversationId,
+          message: result.message,
+        });
+
+        if (result.aiReply) {
+          emitToConversationParticipants(result.conversation, 'chat:message', {
+            conversationId,
+            message: result.aiReply,
+          });
+        }
+
+        if (result.escalated) {
+          emitToConversationParticipants(
+            result.conversation,
+            'chat:handoff_occurred',
+            {
               conversationId,
-              chunk,
-            });
-          };
-
-          const aiReply = await aiChatService.generateReply(
-            conversation,
-            result.message,
-            actor,
-            onChunk
+              status: result.conversation.status,
+              mode: result.conversation.mode,
+              reason: result.conversation.handoffReason,
+            }
           );
-
-          io.to(`conversation:${conversationId}`).emit('chat:ai_typing', {
-            conversationId,
-            isTyping: false,
-          });
-
-          if (aiReply) {
-            io.to(`conversation:${conversationId}`).emit('chat:message', {
-              conversationId,
-              message: aiReply,
-            });
+          if (result.systemMessage) {
+            emitToConversationParticipants(
+              result.conversation,
+              'chat:message',
+              {
+                conversationId,
+                message: result.systemMessage,
+              }
+            );
           }
         }
 
-        if (callback) callback({ success: true, data: result });
+        if (result.conversation.status !== 'bot_active') {
+          emitToSupportAgents('support:queue_updated', {
+            conversationId,
+            mode: result.conversation.mode,
+            status: result.conversation.status,
+          });
+        }
+
+        callback?.({
+          success: true,
+          data: {
+            message: result.message,
+            ...(result.aiReply ? { aiReply: result.aiReply } : {}),
+          },
+        });
       } catch (err: unknown) {
         logger.error('Error handling chat:send_message socket event:', err);
-        const message =
-          err instanceof Error ? err.message : 'Failed to send message';
-        if (callback) callback({ success: false, error: message });
+        callback?.({
+          success: false,
+          error: toSafeSocketError(err, 'Failed to send message'),
+        });
       }
     }
   );
 
-  // Live typing indicator
-  socket.on(
-    'chat:typing',
-    (payload: { conversationId: string; isTyping: boolean }) => {
-      if (payload?.conversationId) {
-        socket
-          .to(`conversation:${payload.conversationId}`)
-          .emit('chat:typing', {
-            conversationId: payload.conversationId,
-            senderRole: socket.data.role,
-            isTyping: Boolean(payload.isTyping),
-          });
-      }
-    }
-  );
+  // Live typing indicator (strictly guarded by room membership + Zod schema)
+  socket.on('chat:typing', (payload: unknown) => {
+    const parsed = socketTypingSchema.safeParse(payload);
+    if (!parsed.success) return;
+
+    const room = `conversation:${parsed.data.conversationId}`;
+    if (!socket.rooms.has(room)) return;
+
+    socket.to(room).emit('chat:typing', {
+      conversationId: parsed.data.conversationId,
+      senderRole: socket.data.role,
+      isTyping: parsed.data.isTyping,
+    });
+  });
 
   // Mark conversation read
-  socket.on('chat:mark_read', async (payload: { conversationId: string }) => {
+  socket.on('chat:mark_read', async (payload: unknown) => {
     try {
-      if (!payload?.conversationId) return;
-      await chatService.markConversationRead(actor, payload.conversationId);
-      io.to(`conversation:${payload.conversationId}`).emit(
-        'chat:read_receipt',
-        {
-          conversationId: payload.conversationId,
-          readerRole: socket.data.role,
-        }
-      );
+      const parsed = idParamSchema.safeParse({
+        id: (payload as { conversationId?: unknown } | null)?.conversationId,
+      });
+      if (!parsed.success) return;
+
+      const conversationId = parsed.data.id;
+      await chatService.markConversationRead(actor, conversationId);
+      io.to(`conversation:${conversationId}`).emit('chat:read_receipt', {
+        conversationId,
+        readerRole: socket.data.role,
+      });
     } catch (err) {
       logger.warn('Error marking conversation read via socket:', err);
     }
@@ -231,44 +300,43 @@ export const registerChatHandlers = (
   socket.on(
     'chat:handoff',
     async (
-      payload: { conversationId: string; reason?: string },
+      payload: unknown,
       callback?: (res: { success: boolean; error?: string }) => void
     ) => {
       try {
-        if (!payload?.conversationId) {
-          if (callback)
-            callback({ success: false, error: 'Invalid conversationId' });
+        const parsed = socketHandoffSchema.safeParse(payload);
+        if (!parsed.success) {
+          callback?.({ success: false, error: 'Invalid conversationId' });
           return;
         }
 
-        const conversation = await chatService.requestHandoff(
-          actor,
-          payload.conversationId,
-          payload.reason
-        );
+        const { conversationId, reason } = parsed.data;
+        const { conversation, systemMessage } =
+          await chatService.requestHandoff(actor, conversationId, reason);
 
-        io.to(`conversation:${payload.conversationId}`).emit(
-          'chat:handoff_occurred',
-          {
-            conversationId: payload.conversationId,
-            status: conversation.status,
-            mode: conversation.mode,
-            reason: conversation.handoffReason,
-          }
-        );
-
-        // Notify all online support agents
-        io.to('support:agents').emit('support:queue_updated', {
-          conversationId: payload.conversationId,
+        emitToConversationParticipants(conversation, 'chat:handoff_occurred', {
+          conversationId,
+          status: conversation.status,
+          mode: conversation.mode,
+          reason: conversation.handoffReason,
+        });
+        emitToConversationParticipants(conversation, 'chat:message', {
+          conversationId,
+          message: systemMessage,
+        });
+        emitToSupportAgents('support:queue_updated', {
+          conversationId,
           mode: conversation.mode,
           status: conversation.status,
+          handoffReason: conversation.handoffReason,
         });
 
-        if (callback) callback({ success: true });
+        callback?.({ success: true });
       } catch (err: unknown) {
-        const message =
-          err instanceof Error ? err.message : 'Failed to request handoff';
-        if (callback) callback({ success: false, error: message });
+        callback?.({
+          success: false,
+          error: toSafeSocketError(err, 'Failed to request handoff'),
+        });
       }
     }
   );

@@ -1,9 +1,11 @@
-import request from 'supertest';
+import request, { Response } from 'supertest';
 import mongoose from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import app from '../src/app.js';
 import { User } from '../src/models/User.js';
+import { RefreshToken } from '../src/models/RefreshToken.js';
 import { createTokenHash } from '../src/utils/crypto.js';
+import { signAccessToken } from '../src/utils/jwt.js';
 
 let mongoServer: MongoMemoryServer;
 
@@ -19,7 +21,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await User.deleteMany({});
+  await Promise.all([User.deleteMany({}), RefreshToken.deleteMany({})]);
 });
 
 const sampleUser = {
@@ -30,9 +32,24 @@ const sampleUser = {
   passwordConfirm: 'Password123!',
 };
 
+function extractRefreshCookie(res: Response): {
+  header: string;
+  cookiePair: string;
+  rawToken: string;
+} {
+  const setCookieHeaders = res.headers['set-cookie'] as unknown as
+    string[] | undefined;
+  expect(setCookieHeaders).toBeDefined();
+  const header = setCookieHeaders!.find((c) => c.startsWith('refreshToken='));
+  expect(header).toBeDefined();
+  const cookiePair = header!.split(';')[0];
+  const rawToken = decodeURIComponent(cookiePair.slice('refreshToken='.length));
+  return { header: header!, cookiePair, rawToken };
+}
+
 describe('Auth Integration Tests', () => {
   describe('POST /api/v1/auth/register', () => {
-    it('should register a new user successfully and return tokens', async () => {
+    it('should register a new user, return accessToken only in JSON, and set HttpOnly refresh cookie', async () => {
       const res = await request(app)
         .post('/api/v1/auth/register')
         .send(sampleUser);
@@ -45,7 +62,11 @@ describe('Auth Integration Tests', () => {
       expect(res.body.data.user).not.toHaveProperty('password');
       expect(res.body.data.user).not.toHaveProperty('refreshTokens');
       expect(res.body.data.tokens).toHaveProperty('accessToken');
-      expect(res.body.data.tokens).toHaveProperty('refreshToken');
+      expect(res.body.data.tokens).not.toHaveProperty('refreshToken');
+
+      const { header } = extractRefreshCookie(res);
+      expect(header).toMatch(/HttpOnly/i);
+      expect(header).toMatch(/Path=\/api\/v1\/auth/i);
 
       // Verify email verification token was generated on user record
       const dbUser = await User.findOne({
@@ -53,6 +74,19 @@ describe('Auth Integration Tests', () => {
       }).select('+emailVerificationToken +emailVerificationExpires');
       expect(dbUser?.emailVerificationToken).toBeDefined();
       expect(dbUser?.emailVerificationExpires).toBeDefined();
+    });
+
+    it('should accept password manager special characters (#, -, _, ^)', async () => {
+      const res = await request(app)
+        .post('/api/v1/auth/register')
+        .send({
+          ...sampleUser,
+          email: 'pwmanager@example.com',
+          password: 'Valid_Password-2026#',
+          passwordConfirm: 'Valid_Password-2026#',
+        });
+
+      expect(res.statusCode).toBe(201);
     });
 
     it('should fail with 400 when registering with duplicate email', async () => {
@@ -109,7 +143,7 @@ describe('Auth Integration Tests', () => {
       await request(app).post('/api/v1/auth/register').send(sampleUser);
     });
 
-    it('should login successfully with correct credentials', async () => {
+    it('should login successfully with correct credentials and set refresh cookie', async () => {
       const res = await request(app).post('/api/v1/auth/login').send({
         email: sampleUser.email,
         password: sampleUser.password,
@@ -119,7 +153,8 @@ describe('Auth Integration Tests', () => {
       expect(res.body.status).toBe('success');
       expect(res.body.data.user.email).toBe(sampleUser.email.toLowerCase());
       expect(res.body.data.tokens).toHaveProperty('accessToken');
-      expect(res.body.data.tokens).toHaveProperty('refreshToken');
+      expect(res.body.data.tokens).not.toHaveProperty('refreshToken');
+      extractRefreshCookie(res);
     });
 
     it('should fail with 401 for incorrect password', async () => {
@@ -159,90 +194,117 @@ describe('Auth Integration Tests', () => {
     });
   });
 
-  describe('POST /api/v1/auth/refresh-token (Token Rotation)', () => {
-    it('should rotate refresh token and issue new token pair', async () => {
+  describe('POST /api/v1/auth/refresh-token (HttpOnly Cookie Rotation)', () => {
+    it('should store hashed tokens in RefreshToken collection, rotate atomically, and detect reuse', async () => {
       const reg = await request(app)
         .post('/api/v1/auth/register')
         .send(sampleUser);
 
-      const initialRefreshToken = reg.body.data.tokens.refreshToken;
+      const { cookiePair: initialCookie, rawToken: initialRawToken } =
+        extractRefreshCookie(reg);
 
+      // Verify DB stores SHA-256 hash, not raw JWT
+      const storedTokens = await RefreshToken.find({});
+      expect(storedTokens).toHaveLength(1);
+      expect(storedTokens[0].tokenHash).toBe(createTokenHash(initialRawToken));
+      expect(storedTokens[0].tokenHash).not.toBe(initialRawToken);
+
+      // Rotate via HttpOnly cookie
       const res = await request(app)
         .post('/api/v1/auth/refresh-token')
-        .send({ refreshToken: initialRefreshToken });
+        .set('Cookie', initialCookie);
 
       expect(res.statusCode).toBe(200);
       expect(res.body.status).toBe('success');
       expect(res.body.data.tokens).toHaveProperty('accessToken');
-      expect(res.body.data.tokens).toHaveProperty('refreshToken');
-      expect(res.body.data.tokens.refreshToken).not.toBe(initialRefreshToken);
+      expect(res.body.data.tokens).not.toHaveProperty('refreshToken');
+      const { rawToken: rotatedRawToken } = extractRefreshCookie(res);
+      expect(rotatedRawToken).not.toBe(initialRawToken);
 
-      // Verify that within grace window, the token can be refreshed concurrently (multi-tab support)
+      // Single concurrent retry within grace window succeeds (multi-tab support)
       const concurrentRes = await request(app)
         .post('/api/v1/auth/refresh-token')
-        .send({ refreshToken: initialRefreshToken });
+        .set('Cookie', initialCookie);
 
       expect(concurrentRes.statusCode).toBe(200);
-      expect(concurrentRes.body.data.tokens).toHaveProperty('refreshToken');
+      extractRefreshCookie(concurrentRes);
 
-      // Simulate grace period expiration (set revokedAt to 35s ago)
-      await User.updateOne(
-        {
-          email: sampleUser.email.toLowerCase(),
-          'refreshTokens.token': createTokenHash(initialRefreshToken),
-        },
-        { $set: { 'refreshTokens.$.revokedAt': new Date(Date.now() - 35000) } }
-      );
-
-      // Verify that using the old token after grace window fails and triggers reuse detection
-      const reuseRes = await request(app)
+      // Subsequent replay (grace already consumed) triggers reuse detection and wipes all sessions
+      const secondReplayRes = await request(app)
         .post('/api/v1/auth/refresh-token')
-        .send({ refreshToken: initialRefreshToken });
+        .set('Cookie', initialCookie);
 
-      expect(reuseRes.statusCode).toBe(401);
-      expect(reuseRes.body.message).toMatch(/reused/i);
+      expect(secondReplayRes.statusCode).toBe(401);
+      expect(secondReplayRes.body.message).toMatch(/reused/i);
 
-      // Verify all sessions were invalidated on reuse detection
-      const user = await User.findOne({
-        email: sampleUser.email.toLowerCase(),
-      }).select('+refreshTokens');
-      expect(user?.refreshTokens).toHaveLength(0);
+      const remainingTokens = await RefreshToken.find({});
+      expect(remainingTokens).toHaveLength(0);
     });
 
-    it('should fail with 401 for invalid refresh token', async () => {
-      const res = await request(app)
-        .post('/api/v1/auth/refresh-token')
-        .send({ refreshToken: 'invalid.token.here' });
+    it('should detect reuse after grace period expiration and purge all sessions', async () => {
+      const registerRes = await request(app)
+        .post('/api/v1/auth/register')
+        .send(sampleUser);
 
-      expect(res.statusCode).toBe(401);
+      const { cookiePair: initialCookie, rawToken: initialRawToken } =
+        extractRefreshCookie(registerRes);
+
+      await request(app)
+        .post('/api/v1/auth/refresh-token')
+        .set('Cookie', initialCookie);
+
+      // Expire grace window on the revoked token
+      await RefreshToken.updateOne(
+        { tokenHash: createTokenHash(initialRawToken) },
+        { $set: { revokedAt: new Date(Date.now() - 35000) } }
+      );
+
+      const reuseRes = await request(app)
+        .post('/api/v1/auth/refresh-token')
+        .set('Cookie', initialCookie);
+
+      expect(reuseRes.statusCode).toBe(401);
+      expect(reuseRes.body.message).toMatch(/Invalid or reused refresh token/i);
+      expect(await RefreshToken.find({})).toHaveLength(0);
+    });
+
+    it('should fail with 400 when refresh cookie is missing and 401 when invalid', async () => {
+      const missingRes = await request(app).post('/api/v1/auth/refresh-token');
+      expect(missingRes.statusCode).toBe(400);
+
+      const invalidRes = await request(app)
+        .post('/api/v1/auth/refresh-token')
+        .set('Cookie', 'refreshToken=invalid.token.here');
+      expect(invalidRes.statusCode).toBe(401);
     });
   });
 
   describe('POST /api/v1/auth/logout and /logout-all', () => {
-    it('should log out single session by removing specific refresh token', async () => {
+    it('should log out single session via cookie even when access token is omitted/expired', async () => {
       const reg = await request(app)
         .post('/api/v1/auth/register')
         .send(sampleUser);
 
-      const { accessToken, refreshToken } = reg.body.data.tokens;
+      const { cookiePair } = extractRefreshCookie(reg);
 
+      // Logout using only the refresh cookie (simulates expired access token)
       const res = await request(app)
         .post('/api/v1/auth/logout')
-        .set('Authorization', `Bearer ${accessToken}`)
-        .send({ refreshToken });
+        .set('Cookie', cookiePair);
 
       expect(res.statusCode).toBe(200);
       expect(res.body.message).toMatch(/Logged out successfully/i);
+      expect(await RefreshToken.find({})).toHaveLength(0);
 
-      // Refreshing with that token should now fail
+      // Refreshing with that cookie should now fail
       const refreshRes = await request(app)
         .post('/api/v1/auth/refresh-token')
-        .send({ refreshToken });
+        .set('Cookie', cookiePair);
 
       expect(refreshRes.statusCode).toBe(401);
     });
 
-    it('should log out all sessions', async () => {
+    it('should log out all sessions and immediately invalidate active access tokens', async () => {
       const reg = await request(app)
         .post('/api/v1/auth/register')
         .send(sampleUser);
@@ -254,16 +316,18 @@ describe('Auth Integration Tests', () => {
         .set('Authorization', `Bearer ${accessToken}`);
 
       expect(res.statusCode).toBe(200);
+      expect(await RefreshToken.find({})).toHaveLength(0);
 
-      const user = await User.findOne({
-        email: sampleUser.email.toLowerCase(),
-      }).select('+refreshTokens');
-      expect(user?.refreshTokens).toHaveLength(0);
+      // Existing access token is invalidated immediately via tokenVersion
+      const meRes = await request(app)
+        .get('/api/v1/users/me')
+        .set('Authorization', `Bearer ${accessToken}`);
+      expect(meRes.statusCode).toBe(401);
     });
   });
 
-  describe('POST /api/v1/auth/forgot-password & PATCH /reset-password/:token', () => {
-    it('should generate reset token and allow password reset', async () => {
+  describe('POST /api/v1/auth/forgot-password & POST /reset-password', () => {
+    it('should generate reset token and allow password reset with token in body', async () => {
       await request(app).post('/api/v1/auth/register').send(sampleUser);
 
       // 1) Request forgot password
@@ -274,24 +338,26 @@ describe('Auth Integration Tests', () => {
       expect(forgotRes.statusCode).toBe(200);
       expect(forgotRes.body.message).toMatch(/instructions have been sent/i);
 
-      // Retrieve user and generate a known reset token to test the endpoint
       const user = await User.findOne({
         email: sampleUser.email.toLowerCase(),
       });
       const resetToken = user!.createPasswordResetToken();
       await user!.save();
 
-      // 2) Reset password with token
+      // 2) Reset password with token in POST body
       const newPassword = 'NewPassword999!';
       const resetRes = await request(app)
-        .patch(`/api/v1/auth/reset-password/${resetToken}`)
+        .post('/api/v1/auth/reset-password')
         .send({
+          token: resetToken,
           password: newPassword,
           passwordConfirm: newPassword,
         });
 
       expect(resetRes.statusCode).toBe(200);
       expect(resetRes.body.data.tokens).toHaveProperty('accessToken');
+      expect(resetRes.body.data.tokens).not.toHaveProperty('refreshToken');
+      extractRefreshCookie(resetRes);
 
       // 3) Verify can login with new password
       const loginRes = await request(app).post('/api/v1/auth/login').send({
@@ -300,6 +366,25 @@ describe('Auth Integration Tests', () => {
       });
 
       expect(loginRes.statusCode).toBe(200);
+    });
+
+    it('should reject password reset for deactivated account', async () => {
+      await request(app).post('/api/v1/auth/register').send(sampleUser);
+      const user = await User.findOne({
+        email: sampleUser.email.toLowerCase(),
+      });
+      const resetToken = user!.createPasswordResetToken();
+      user!.isActive = false;
+      await user!.save();
+
+      const res = await request(app).post('/api/v1/auth/reset-password').send({
+        token: resetToken,
+        password: 'NewPassword999!',
+        passwordConfirm: 'NewPassword999!',
+      });
+
+      expect(res.statusCode).toBe(401);
+      expect(res.body.message).toMatch(/deactivated/i);
     });
 
     it('should return 200 for forgot-password even if email does not exist (anti-enumeration)', async () => {
@@ -312,20 +397,19 @@ describe('Auth Integration Tests', () => {
     });
 
     it('should fail with 400 when reset token is invalid or expired', async () => {
-      const res = await request(app)
-        .patch('/api/v1/auth/reset-password/invalid-or-expired-token')
-        .send({
-          password: 'ValidPassword123!',
-          passwordConfirm: 'ValidPassword123!',
-        });
+      const res = await request(app).post('/api/v1/auth/reset-password').send({
+        token: 'invalid-or-expired-token',
+        password: 'ValidPassword123!',
+        passwordConfirm: 'ValidPassword123!',
+      });
 
       expect(res.statusCode).toBe(400);
       expect(res.body.message).toMatch(/invalid or has expired/i);
     });
   });
 
-  describe('GET /api/v1/auth/verify-email/:token', () => {
-    it('should verify email successfully with valid token', async () => {
+  describe('POST /api/v1/auth/verify-email', () => {
+    it('should verify email successfully with valid token in body', async () => {
       await request(app).post('/api/v1/auth/register').send(sampleUser);
 
       const user = await User.findOne({
@@ -334,7 +418,9 @@ describe('Auth Integration Tests', () => {
       const token = user!.createEmailVerificationToken();
       await user!.save();
 
-      const res = await request(app).get(`/api/v1/auth/verify-email/${token}`);
+      const res = await request(app)
+        .post('/api/v1/auth/verify-email')
+        .send({ token });
 
       expect(res.statusCode).toBe(200);
       expect(res.body.message).toMatch(/successfully verified/i);
@@ -346,148 +432,50 @@ describe('Auth Integration Tests', () => {
     });
 
     it('should fail with 400 for invalid email verification token', async () => {
-      const res = await request(app).get(
-        '/api/v1/auth/verify-email/fake-token-123'
-      );
+      const res = await request(app)
+        .post('/api/v1/auth/verify-email')
+        .send({ token: 'fake-token-123' });
 
       expect(res.statusCode).toBe(400);
       expect(res.body.message).toMatch(/invalid or has expired/i);
     });
-  });
 
-  describe('POST /api/v1/auth/refresh-token', () => {
-    it('should store hashed tokens in DB and successfully rotate tokens', async () => {
-      const registerRes = await request(app)
-        .post('/api/v1/auth/register')
-        .send(sampleUser);
+    it('should fail with 401 when verifying email of deactivated account', async () => {
+      const user = await User.create({
+        firstName: 'Deact',
+        lastName: 'User',
+        email: 'deact.verify@example.com',
+        password: 'Password123!',
+        isActive: false,
+      });
+      const token = user.createEmailVerificationToken();
+      await user.save();
 
-      const rawRefreshToken = registerRes.body.data.tokens.refreshToken;
+      const res = await request(app)
+        .post('/api/v1/auth/verify-email')
+        .send({ token });
 
-      // Verify that database stores the SHA-256 hash, NOT the raw JWT token
-      const dbUser = await User.findOne({
-        email: sampleUser.email.toLowerCase(),
-      }).select('+refreshTokens');
-
-      expect(dbUser?.refreshTokens).toHaveLength(1);
-      expect(dbUser?.refreshTokens[0].token).toBe(
-        createTokenHash(rawRefreshToken)
-      );
-      expect(dbUser?.refreshTokens[0].token).not.toBe(rawRefreshToken);
-
-      // Perform refresh
-      const refreshRes = await request(app)
-        .post('/api/v1/auth/refresh-token')
-        .send({ refreshToken: rawRefreshToken });
-
-      expect(refreshRes.statusCode).toBe(200);
-      expect(refreshRes.body.status).toBe('success');
-      expect(refreshRes.body.data.tokens).toHaveProperty('accessToken');
-      expect(refreshRes.body.data.tokens).toHaveProperty('refreshToken');
-
-      const rotatedRefreshToken = refreshRes.body.data.tokens.refreshToken;
-      expect(rotatedRefreshToken).not.toBe(rawRefreshToken);
-
-      // Verify DB now holds the active rotated token
-      const updatedUser = await User.findOne({
-        email: sampleUser.email.toLowerCase(),
-      }).select('+refreshTokens');
-
-      const activeToken = updatedUser?.refreshTokens.find(
-        (rt) => !rt.revokedAt
-      );
-      expect(activeToken?.token).toBe(createTokenHash(rotatedRefreshToken));
-    });
-
-    it('should detect reuse of already rotated token and wipe all user sessions', async () => {
-      const registerRes = await request(app)
-        .post('/api/v1/auth/register')
-        .send(sampleUser);
-
-      const initialRefreshToken = registerRes.body.data.tokens.refreshToken;
-
-      // First rotation
-      await request(app)
-        .post('/api/v1/auth/refresh-token')
-        .send({ refreshToken: initialRefreshToken });
-
-      // Simulate expiration of grace period (set revokedAt to 35s ago)
-      await User.updateOne(
-        {
-          email: sampleUser.email.toLowerCase(),
-          'refreshTokens.token': createTokenHash(initialRefreshToken),
-        },
-        { $set: { 'refreshTokens.$.revokedAt': new Date(Date.now() - 35000) } }
-      );
-
-      // Attempt reuse of the initial (now invalidated) token after grace period
-      const reuseRes = await request(app)
-        .post('/api/v1/auth/refresh-token')
-        .send({ refreshToken: initialRefreshToken });
-
-      expect(reuseRes.statusCode).toBe(401);
-      expect(reuseRes.body.message).toMatch(/Invalid or reused refresh token/i);
-
-      // Verify all sessions were purged for security
-      const dbUser = await User.findOne({
-        email: sampleUser.email.toLowerCase(),
-      }).select('+refreshTokens');
-      expect(dbUser?.refreshTokens).toHaveLength(0);
-    });
-
-    it('should set HttpOnly refresh token cookie and allow cookie-based refresh', async () => {
-      const registerRes = await request(app)
-        .post('/api/v1/auth/register')
-        .send({
-          firstName: 'Cookie',
-          lastName: 'Tester',
-          email: 'cookie.tester@example.com',
-          password: 'Password123!',
-          passwordConfirm: 'Password123!',
-        });
-
-      expect(registerRes.statusCode).toBe(201);
-      const setCookieHeaders = registerRes.headers['set-cookie'];
-      expect(setCookieHeaders).toBeDefined();
-      const cookieHeader = (setCookieHeaders as unknown as string[]).find((c) =>
-        c.startsWith('refreshToken=')
-      );
-      expect(cookieHeader).toBeDefined();
-      expect(cookieHeader).toMatch(/HttpOnly/i);
-
-      const cookieVal = cookieHeader!.split(';')[0];
-
-      // Refresh using Cookie header without request body
-      const refreshRes = await request(app)
-        .post('/api/v1/auth/refresh-token')
-        .set('Cookie', cookieVal);
-
-      expect(refreshRes.statusCode).toBe(200);
-      expect(refreshRes.body.status).toBe('success');
-      expect(refreshRes.body.data.tokens).toHaveProperty('accessToken');
+      expect(res.statusCode).toBe(401);
+      expect(res.body.message).toMatch(/deactivated/i);
     });
   });
 
-  describe('POST /api/v1/auth/logout', () => {
-    it('should invalidate the specific refresh token upon logout', async () => {
-      const registerRes = await request(app)
-        .post('/api/v1/auth/register')
-        .send(sampleUser);
+  describe('Access token validation', () => {
+    it('should reject access token after tokenVersion mismatch', async () => {
+      const user = await User.create({
+        firstName: 'Ver',
+        lastName: 'User',
+        email: 'ver@example.com',
+        password: 'Password123!',
+        tokenVersion: 2,
+      });
+      const staleToken = signAccessToken(user._id.toString(), 'customer', 1);
 
-      const { accessToken, refreshToken } = registerRes.body.data.tokens;
+      const res = await request(app)
+        .get('/api/v1/users/me')
+        .set('Authorization', `Bearer ${staleToken}`);
 
-      const logoutRes = await request(app)
-        .post('/api/v1/auth/logout')
-        .set('Authorization', `Bearer ${accessToken}`)
-        .send({ refreshToken });
-
-      expect(logoutRes.statusCode).toBe(200);
-      expect(logoutRes.body.message).toMatch(/Logged out successfully/i);
-
-      // Verify the token was pulled from database
-      const dbUser = await User.findOne({
-        email: sampleUser.email.toLowerCase(),
-      }).select('+refreshTokens');
-      expect(dbUser?.refreshTokens).toHaveLength(0);
+      expect(res.statusCode).toBe(401);
     });
   });
 });

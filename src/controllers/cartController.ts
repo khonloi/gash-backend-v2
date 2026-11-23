@@ -42,7 +42,7 @@ export const removeCartItem = catchAsync(
 export const clearCart = catchAsync(
   async (req: Request, res: Response): Promise<void> => {
     await cartService.clearCart(String(req.user!._id));
-    sendSuccess(res, null, 204);
+    res.status(204).send();
   }
 );
 

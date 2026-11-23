@@ -90,9 +90,12 @@ describe('Utility Unit Tests', () => {
       expect(resolveOwnerId(populated)).toBe(id.toString());
     });
 
-    it('should return undefined for null or undefined input', () => {
+    it('should return undefined for null, undefined, or non-owner objects', () => {
       expect(resolveOwnerId(undefined)).toBeUndefined();
       expect(resolveOwnerId(null)).toBeUndefined();
+      expect(
+        resolveOwnerId({ foo: 'bar' } as unknown as IUser)
+      ).toBeUndefined();
     });
   });
 
@@ -138,6 +141,26 @@ describe('Utility Unit Tests', () => {
       expect(() => sanitizeInPlace({})).not.toThrow();
       expect(() => sanitizeInPlace([])).not.toThrow();
     });
+
+    it('should strip prototype-pollution keys (__proto__, constructor, prototype)', () => {
+      const payload = JSON.parse(
+        '{"safe":"ok","__proto__":{"polluted":true},"nested":{"constructor":"bad","prototype":"bad","ok":1}}'
+      );
+
+      sanitizeInPlace(payload);
+
+      expect(Object.prototype.hasOwnProperty.call(payload, '__proto__')).toBe(
+        false
+      );
+      expect(
+        Object.prototype.hasOwnProperty.call(payload.nested, 'constructor')
+      ).toBe(false);
+      expect(
+        Object.prototype.hasOwnProperty.call(payload.nested, 'prototype')
+      ).toBe(false);
+      expect(payload.safe).toBe('ok');
+      expect(payload.nested.ok).toBe(1);
+    });
   });
 
   describe('slugify', () => {
@@ -145,8 +168,9 @@ describe('Utility Unit Tests', () => {
       expect(slugify('Running Pro Shoes')).toBe('running-pro-shoes');
     });
 
-    it('should normalize accented and unicode characters', () => {
+    it('should normalize accented, unicode, and Vietnamese Đ/đ characters', () => {
       expect(slugify('Café & Crème Brûlée')).toBe('cafe-creme-brulee');
+      expect(slugify('Áo Đá Bóng Đen')).toBe('ao-da-bong-den');
     });
 
     it('should remove special characters and symbols', () => {
@@ -337,6 +361,48 @@ describe('Utility Unit Tests', () => {
       }).limitFields();
 
       expect(mockQuery.select.calls[0][0]).toBe('name price');
+    });
+
+    it('should strip space-separated +fields, enforce allowedSelectFields, and reject mixed projections', () => {
+      const mockSpace = createMockQuery();
+      new APIFeatures(mockSpace as unknown as Query<unknown[], unknown>, {
+        fields: 'name +password',
+      }).limitFields();
+      expect(mockSpace.select.calls[0][0]).toBe('name');
+
+      const mockAllow = createMockQuery();
+      new APIFeatures(
+        mockAllow as unknown as Query<unknown[], unknown>,
+        { fields: 'email,password,refreshTokens' },
+        { allowedSelectFields: ['_id', 'email', 'firstName'] }
+      ).limitFields();
+      expect(mockAllow.select.calls[0][0]).toBe('email');
+
+      const mockMixed = createMockQuery();
+      expect(() =>
+        new APIFeatures(mockMixed as unknown as Query<unknown[], unknown>, {
+          fields: 'name,-price',
+        }).limitFields()
+      ).toThrow('Cannot mix inclusion and exclusion fields in projection');
+    });
+
+    it('should drop top-level $ keys and non-allowlisted nested operators in filter()', () => {
+      const mockQuery = createMockQuery();
+      new APIFeatures(
+        mockQuery as unknown as Query<unknown[], unknown>,
+        {
+          $where: 'sleep(5000)',
+          'nested.dot': 'bad',
+          price: { gte: 50, $regex: '.*' },
+          status: 'active',
+        },
+        { allowedFilterFields: ['price', 'status'] }
+      ).filter();
+
+      expect(mockQuery.find.calls[0][0]).toEqual({
+        price: { $gte: 50 },
+        status: 'active',
+      });
     });
 
     it('should preserve string values containing words like in, gt, or ne', () => {
@@ -573,7 +639,12 @@ describe('Utility Unit Tests', () => {
       const expiredToken = jwt.sign(
         { id: 'user123', type: 'access' },
         env.JWT_SECRET,
-        { expiresIn: '-1s', algorithm: 'HS256' }
+        {
+          expiresIn: '-1s',
+          algorithm: 'HS256',
+          issuer: 'gash-backend',
+          audience: 'gash-api',
+        }
       );
 
       expect(() => verifyToken(expiredToken)).toThrow(

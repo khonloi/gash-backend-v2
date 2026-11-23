@@ -1,5 +1,10 @@
 import { z } from 'zod';
 import { cartItemBaseSchema } from './cartValidation.js';
+import {
+  numericComparisonFilterSchema,
+  objectIdSchema,
+  paginationQuerySchema,
+} from './commonValidation.js';
 
 const shippingAddressSchema = z.object({
   fullName: z
@@ -47,7 +52,13 @@ export const createOrderSchema = z.object({
     .trim()
     .max(1000, 'Notes cannot exceed 1000 characters')
     .optional(),
-  items: z.array(orderItemInputSchema).optional(),
+  idempotencyKey: z
+    .string()
+    .trim()
+    .min(1, 'Idempotency key cannot be empty')
+    .max(128, 'Idempotency key cannot exceed 128 characters')
+    .optional(),
+  items: z.array(orderItemInputSchema).max(50).optional(),
 });
 
 export const updateOrderStatusSchema = z.object({
@@ -79,9 +90,46 @@ export const cancelOrderSchema = z.object({
     .optional(),
 });
 
+const orderStatusEnum = z.enum([
+  'pending',
+  'confirmed',
+  'processing',
+  'shipped',
+  'delivered',
+  'cancelled',
+  'refunded',
+]);
+
+const paymentStatusEnum = z.enum(['pending', 'paid', 'failed', 'refunded']);
+const paymentMethodEnum = z.enum([
+  'cod',
+  'credit_card',
+  'apple_pay',
+  'paypal',
+  'momo',
+  'vnpay',
+]);
+const shippingMethodEnum = z.enum(['standard', 'express']);
+
+export const myOrderQuerySchema = paginationQuerySchema.extend({
+  status: orderStatusEnum.optional(),
+  paymentStatus: paymentStatusEnum.optional(),
+  paymentMethod: paymentMethodEnum.optional(),
+  shippingMethod: shippingMethodEnum.optional(),
+  total: numericComparisonFilterSchema.optional(),
+});
+
+export const adminOrderQuerySchema = myOrderQuerySchema.extend({
+  user: objectIdSchema.optional(),
+  keyword: z.string().trim().max(200).optional(),
+  orderNumber: z.string().trim().max(50).optional(),
+});
+
 export type CreateOrderInput = z.infer<typeof createOrderSchema>;
 export type UpdateOrderStatusInput = z.infer<typeof updateOrderStatusSchema>;
 export type UpdatePaymentStatusInput = z.infer<
   typeof updatePaymentStatusSchema
 >;
 export type CancelOrderInput = z.infer<typeof cancelOrderSchema>;
+export type MyOrderQueryInput = z.infer<typeof myOrderQuerySchema>;
+export type AdminOrderQueryInput = z.infer<typeof adminOrderQuerySchema>;

@@ -76,9 +76,9 @@ describe('Middleware Unit & Integration Tests', () => {
         expect(extractBearerToken(req)).toBeUndefined();
       });
 
-      it('should return token when authorization header starts with Bearer', () => {
+      it('should return token when authorization header starts with Bearer (case-insensitive)', () => {
         const req = {
-          headers: { authorization: 'Bearer my-jwt-token-value' },
+          headers: { authorization: 'bearer my-jwt-token-value' },
         } as Request;
         expect(extractBearerToken(req)).toBe('my-jwt-token-value');
       });
@@ -142,6 +142,22 @@ describe('Middleware Unit & Integration Tests', () => {
 
         await expect(verifyUserFromToken(token)).rejects.toThrow(
           'User recently changed password! Please log in again.'
+        );
+      });
+
+      it('should throw 401 if tokenVersion does not match user current tokenVersion', async () => {
+        const user = await User.create({
+          firstName: 'Version',
+          lastName: 'User',
+          email: 'version@example.com',
+          password: 'Password123!',
+          tokenVersion: 3,
+        });
+
+        const staleToken = signAccessToken(user._id.toString(), user.role, 2);
+
+        await expect(verifyUserFromToken(staleToken)).rejects.toThrow(
+          'Your session is no longer valid'
         );
       });
 
@@ -507,6 +523,28 @@ describe('Middleware Unit & Integration Tests', () => {
         expect(res.statusCode).toBe(401);
         expect((res.sentJson as Record<string, unknown>).message).toContain(
           'Your token has expired'
+        );
+      });
+
+      it('should attach requestId when present on req and handle malformed JSON SyntaxError', () => {
+        const res = createMockResponse();
+        const syntaxErr = Object.assign(new SyntaxError('Unexpected token'), {
+          type: 'entity.parse.failed',
+        });
+
+        globalErrorHandler(
+          syntaxErr,
+          { id: 'req-abc-123' } as Request,
+          res,
+          () => {}
+        );
+
+        expect(res.statusCode).toBe(400);
+        expect((res.sentJson as Record<string, unknown>).requestId).toBe(
+          'req-abc-123'
+        );
+        expect((res.sentJson as Record<string, unknown>).message).toBe(
+          'Invalid JSON payload'
         );
       });
     });

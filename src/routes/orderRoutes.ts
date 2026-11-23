@@ -15,19 +15,26 @@ import {
   updateOrderStatusSchema,
   updatePaymentStatusSchema,
   cancelOrderSchema,
+  myOrderQuerySchema,
+  adminOrderQuerySchema,
 } from '../validations/orderValidation.js';
 import { orderIdParamSchema } from '../validations/commonValidation.js';
 
 const router: Router = Router();
 
 // Customer specific orders route (must be before /:orderId)
-router.get('/my', protect, getMyOrders);
+router.get('/my', protect, validate(myOrderQuerySchema, 'query'), getMyOrders);
 
 // Collection routes
 router
   .route('/')
   .post(optionalAuth, validate(createOrderSchema, 'body'), createOrder)
-  .get(protect, restrictTo('admin'), getAllOrders);
+  .get(
+    protect,
+    restrictTo('admin'),
+    validate(adminOrderQuerySchema, 'query'),
+    getAllOrders
+  );
 
 // Single order routes
 router
